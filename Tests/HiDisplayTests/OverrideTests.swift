@@ -391,6 +391,56 @@ final class FullLadderTests: XCTestCase {
         XCTAssertTrue(report.isInstallable, "errors: \(report.errors.prefix(3).map(\.message))")
     }
 
+    /// The budget is what keeps the slider usable and the ladder selectable in one go.
+    func testTheLadderIsCappedAtTheStepBudget() {
+        // A 6K-class panel: the widest range this can produce, and where an unbounded ladder used to
+        // run past 300 entries.
+        for panel in [panel, (width: 5120, height: 2880), (width: 3840, height: 2160)] {
+            let ladder = ResolutionPresets.scalingSteps(nativePixels: panel)
+            XCTAssertLessThanOrEqual(ladder.count, ResolutionPresets.maximumScalingSteps,
+                                     "\(panel.width)×\(panel.height) produced \(ladder.count) steps")
+            XCTAssertLessThanOrEqual(ladder.count, OverrideValidator.maximumResolutionCount,
+                                     "the full ladder must be selectable in one go")
+        }
+    }
+
+    func testTheLadderSpansThirtyPercentToNativeWidth() throws {
+        let ladder = ResolutionPresets.scalingSteps(nativePixels: panel)
+        let first = try XCTUnwrap(ladder.first)
+        let last = try XCTUnwrap(ladder.last)
+
+        XCTAssertGreaterThanOrEqual(
+            Double(first.logicalWidth) / Double(panel.width), ResolutionPresets.smallestScaleFraction,
+            "\(first.label) is below the floor — those sizes are unusably large and nobody picks them")
+        XCTAssertEqual(last.logicalWidth, panel.width,
+                       "the top of the slider is the panel's own size rendered HiDPI")
+    }
+
+    /// Thinning must cost granularity, never a stop someone is actually aiming for.
+    func testThinningKeepsTheNativeHiDPILandmarks() {
+        let widths = Set(ResolutionPresets.scalingSteps(nativePixels: panel).map(\.logicalWidth))
+
+        XCTAssertTrue(widths.contains(panel.width / 2),
+                      "the pixel-perfect step (\(panel.width / 2)) is the whole point of HiDPI")
+        XCTAssertTrue(widths.contains(panel.width), "native width rendered HiDPI must survive")
+        for fraction in ResolutionPresets.landmarkFractions {
+            let width = Int((Double(panel.width) * fraction).rounded())
+            guard width % 16 == 0 else { continue } // 16:10 → 16 px per step
+            XCTAssertTrue(widths.contains(width), "landmark \(width) was thinned away")
+        }
+    }
+
+    /// A panel small enough that the whole range fits is not thinned at all.
+    func testASmallPanelKeepsEveryStep() {
+        let small = (width: 1920, height: 1080)
+        let ladder = ResolutionPresets.scalingSteps(nativePixels: small)
+        let widths = ladder.map(\.logicalWidth)
+        // 16:9 reduces to 16×9, forced even → 32×18. Contiguous multiples, no gaps.
+        for (previous, next) in zip(widths, widths.dropFirst()) {
+            XCTAssertEqual(next - previous, 32, "an unthinned ladder must not skip steps")
+        }
+    }
+
     func testEveryLadderEntryGetsItsBackingDeclaration() throws {
         let ladder = ResolutionPresets.scalingSteps(nativePixels: panel)
         let generated = OverrideGenerator.generate(

@@ -38,6 +38,9 @@ choice between "native and small" and "scaled and blurry". HiDisplay generates t
 adds the missing modes.
 
 - Presets per panel class (1080p / 1440p / 4K), plus custom sizes.
+- A scaling slider with up to 70 aspect-correct steps, from 30% of native width up to native. Thinning
+  to that budget drops granularity, never a landmark: the pixel-perfect point and the panel's own size
+  are always on the slider.
 - Resolutions macOS **already** offers are shown and disabled — no override is proposed where none is needed.
 - Every resolution is validated against the panel's real native pixel count before it can be installed.
 - The generated plist is shown in full before anything happens.

@@ -246,8 +246,8 @@ struct HiDPISettingsTab: View {
 
     /// Bulk selection, for people who want every scaled size rather than a curated handful.
     ///
-    /// Off by default: a full ladder is over a hundred entries, and System Settings shows every one of
-    /// them, which makes its resolution list unwieldy. Worth having, not worth defaulting to.
+    /// Off by default: even capped at `ResolutionPresets.maximumScalingSteps`, System Settings shows
+    /// every entry, which makes its resolution list unwieldy. Worth having, not worth defaulting to.
     @ViewBuilder
     private func ladderControls(_ display: DisplayDevice) -> some View {
         let usable = candidates.filter {
@@ -267,9 +267,10 @@ struct HiDPISettingsTab: View {
         .font(.caption)
 
         if showFullLadder {
-            Text("Every aspect-correct size for this panel. Each one renders at twice its size and is "
-                + "scaled down to the panel — the trade-off is GPU bandwidth, and a very long list in "
-                + "System Settings.")
+            Text("Up to \(ResolutionPresets.maximumScalingSteps) aspect-correct sizes for this panel, "
+                + "from 30% of native width to native. Each renders at twice its size and is scaled "
+                + "down to the panel — the trade-off is GPU bandwidth, and a long list in System "
+                + "Settings.")
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }

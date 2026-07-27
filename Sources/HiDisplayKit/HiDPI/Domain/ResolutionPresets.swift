@@ -119,12 +119,40 @@ public enum ResolutionPresets {
         }
     }
 
-    /// Every aspect-correct logical size for a panel, finely spaced — the domain of a scaling slider.
+    /// The most steps a scaling slider offers. Every step is also a checkbox in the full ladder and a
+    /// line in a generated override, so this is a real budget rather than a UI nicety: the previous
+    /// unbounded range produced 150+ entries on a 16:10 panel, which is both an unusable slider and
+    /// more selections than `OverrideValidator.maximumResolutionCount` will accept at once.
+    public static let maximumScalingSteps = 70
+
+    /// The smallest logical width offered, as a fraction of the panel's native width.
     ///
-    /// Where `aspectPreservingLadder` picks a handful of round numbers for a checkbox list, this returns
-    /// the full set of valid steps so a slider moves smoothly instead of snapping between six values.
-    /// Both dimensions stay even and the aspect ratio stays exact, so no step can produce a letterboxed
-    /// or unevenly-doubled mode.
+    /// Below roughly a third of native the interface is enormous and the image is heavily upscaled;
+    /// those steps spent slider travel on sizes nobody picks. The floor is a fraction rather than a
+    /// fixed pixel count so it means the same thing on a 1080p panel and a 6K one.
+    public static let smallestScaleFraction = 0.30
+
+    /// Fractions of native width that must survive thinning, whatever the step budget.
+    ///
+    /// These are the sizes worth landing on exactly: `0.5` is the pixel-perfect point, where the 2×
+    /// backing store equals the panel and nothing is resampled, and `1.0` is the panel's own native
+    /// size rendered HiDPI — the two a person actually goes looking for. The quarters between them are
+    /// the familiar "looks like" stops. Losing any of these to an evenly-spaced grid would mean the
+    /// slider could not express the one setting the whole feature exists for.
+    static let landmarkFractions: [Double] = [0.5, 0.625, 0.75, 0.875, 1.0]
+
+    /// Aspect-correct logical sizes for a panel — the domain of a scaling slider.
+    ///
+    /// Where `aspectPreservingLadder` picks a handful of round numbers for a checkbox list, this spans
+    /// the panel's whole usable range so the slider moves smoothly instead of snapping between six
+    /// values. Both dimensions stay even and the aspect ratio stays exact, so no step can produce a
+    /// letterboxed or unevenly-doubled mode.
+    ///
+    /// The range runs from `smallestScaleFraction` of native width up to native width itself, thinned
+    /// to at most `maximumScalingSteps` entries. Thinning keeps both ends and every landmark first,
+    /// then spreads the remaining budget evenly — so reducing the count costs granularity, never a
+    /// meaningful stop. It deliberately extends *below* the pixel-perfect point: those sizes are
+    /// softer, but they are the "larger text" half of the slider, which is what most people reach for.
     ///
     /// Ordered smallest (largest interface) to largest (most desktop space).
     ///
@@ -147,21 +175,58 @@ public enum ResolutionPresets {
             stepHeight *= 2
         }
 
-        // The range deliberately extends *below* the pixel-perfect point (half the native width).
-        // Those sizes render into a backing store smaller than the panel, so they are softer — but they
-        // are also the "larger text" half of the slider, which is what most people are reaching for.
-        // Cutting the range at pixel-perfect, as an earlier version did, removed exactly the options a
-        // reader wants and left only the ones that shrink the interface.
         let lowest = max(
-            OverrideValidator.minimumLogicalWidth / stepWidth + (OverrideValidator.minimumLogicalWidth % stepWidth == 0 ? 0 : 1),
-            OverrideValidator.minimumLogicalHeight / stepHeight + (OverrideValidator.minimumLogicalHeight % stepHeight == 0 ? 0 : 1))
-        let highest = (native.width - stepWidth) / stepWidth
+            multiplesCovering(OverrideValidator.minimumLogicalWidth, step: stepWidth),
+            multiplesCovering(OverrideValidator.minimumLogicalHeight, step: stepHeight),
+            multiplesCovering(
+                Int((Double(native.width) * smallestScaleFraction).rounded()), step: stepWidth),
+            1)
+        // Up to and including native width: at 2× that is the panel's own size rendered HiDPI, the
+        // "most space" end of every tool's slider. `OverrideValidator` allows it and only warns beyond.
+        let highest = native.width / stepWidth
         guard highest >= lowest, lowest > 0 else { return [] }
 
-        return (lowest...highest).map {
+        let multiples = thinned(from: lowest, to: highest, nativeWidth: native.width, step: stepWidth)
+        return multiples.map {
             ScaledResolution(
                 logicalWidth: stepWidth * $0, logicalHeight: stepHeight * $0, backingScale: 2)
         }
+    }
+
+    /// How many whole `step`s it takes to reach at least `value` — the multiple at or above a bound.
+    private static func multiplesCovering(_ value: Int, step: Int) -> Int {
+        guard step > 0 else { return 1 }
+        return value / step + (value % step == 0 ? 0 : 1)
+    }
+
+    /// Picks at most `maximumScalingSteps` multiples from `lowest...highest`, landmarks first.
+    private static func thinned(
+        from lowest: Int, to highest: Int, nativeWidth: Int, step: Int
+    ) -> [Int] {
+        let span = highest - lowest
+        // Nothing to thin: a small panel, or a ratio whose step is coarse enough that the whole range
+        // already fits. Returning every multiple keeps the finest granularity the panel can express.
+        guard span + 1 > maximumScalingSteps else { return Array(lowest...highest) }
+
+        var picked: Set<Int> = [lowest, highest]
+        for fraction in landmarkFractions {
+            let width = Int((Double(nativeWidth) * fraction).rounded())
+            // Only exact multiples qualify. A landmark that is not one cannot be expressed without
+            // breaking the panel's aspect ratio, and a nearby approximation would be a landmark in
+            // name only — the neighbouring grid step already covers that.
+            guard width % step == 0 else { continue }
+            let multiple = width / step
+            guard multiple >= lowest, multiple <= highest else { continue }
+            picked.insert(multiple)
+        }
+
+        // Spend what is left of the budget on an even grid. Collisions with landmarks just mean a few
+        // fewer steps than the maximum, which is invisible on a slider.
+        let gridCount = max(2, maximumScalingSteps - picked.count)
+        for index in 0..<gridCount {
+            picked.insert(lowest + Int((Double(span) * Double(index) / Double(gridCount - 1)).rounded()))
+        }
+        return picked.sorted()
     }
 
     /// Index of the step closest to `resolution`, for seeding a slider from the current mode.
