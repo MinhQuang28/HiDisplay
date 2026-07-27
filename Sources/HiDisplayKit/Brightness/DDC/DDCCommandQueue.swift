@@ -1,0 +1,155 @@
+import Foundation
+
+/// Serialises every DDC operation for one physical display, and coalesces slider spam into the
+/// smallest number of writes that still ends on the value the user let go at.
+///
+/// Three properties this guarantees, all of which are requirements rather than optimisations:
+///
+/// * **No concurrent I2C to one display.** An actor plus a single drain loop means exactly one frame
+///   is on the wire at a time. Overlapping writes are how monitors get wedged until they are power
+///   cycled.
+/// * **Bounded write rate.** `writeInterval` spacing keeps a fast drag from flooding the bus.
+/// * **The final value always lands.** The drain loop re-checks for a newer pending value *after*
+///   each write completes, so the last position of the slider is always the last frame sent — the
+///   coalescing never drops the one write that matters.
+public actor DDCCommandQueue {
+
+    /// Result of asking a display what its brightness range is.
+    public struct Range: Equatable, Sendable {
+        public var minimum: UInt16
+        public var maximum: UInt16
+        public init(minimum: UInt16 = 0, maximum: UInt16 = 100) {
+            self.minimum = minimum
+            self.maximum = maximum
+        }
+    }
+
+    private let transport: DDCTransport
+    private let label: String
+    private let writeInterval: Duration
+    private let readTimeout: Duration
+    private let maxRetries: Int
+
+    /// Latest requested raw value, overwritten rather than queued — this is the coalescing.
+    private var pendingValue: UInt16?
+    private var isDraining = false
+    private var invalidated = false
+
+    public init(
+        transport: DDCTransport,
+        label: String,
+        writeInterval: Duration = DDC.writeInterval,
+        readTimeout: Duration = .milliseconds(500),
+        maxRetries: Int = 2
+    ) {
+        self.transport = transport
+        self.label = label
+        self.writeInterval = writeInterval
+        self.readTimeout = readTimeout
+        self.maxRetries = maxRetries
+    }
+
+    /// Stops accepting work and drops anything pending.
+    ///
+    /// Called when a display disconnects. Without this, in-flight retries keep firing at a monitor
+    /// that no longer exists, and a reconnect arrives to find a queue still working through commands
+    /// addressed to the previous connection.
+    public func invalidate() {
+        invalidated = true
+        pendingValue = nil
+    }
+
+    public var isInvalidated: Bool { invalidated }
+
+    /// Requests a raw brightness value. Returns as soon as the value is recorded — it does not wait
+    /// for the wire, so a caller on the main actor never blocks on I2C latency.
+    public func setBrightness(raw value: UInt16) {
+        guard !invalidated else { return }
+        pendingValue = value
+        guard !isDraining else { return }
+        isDraining = true
+        Task { await drain() }
+    }
+
+    /// Sends every pending value in order, spaced by `writeInterval`, until nothing new arrives.
+    private func drain() async {
+        defer { isDraining = false }
+        while !invalidated, let value = pendingValue {
+            pendingValue = nil
+            do {
+                try await transport.write(VCPCodec.setRequest(code: .brightness, value: value))
+            } catch {
+                Log.ddcBrightness.debug("\(self.label, privacy: .public): write failed: \(String(describing: error), privacy: .public)")
+                // Do not retry writes. A brightness write is idempotent and superseded a moment later
+                // by the next slider position, so retrying only adds bus traffic during a drag.
+            }
+            // Spacing goes after the write, so a single isolated change is not delayed.
+            if pendingValue != nil || !invalidated {
+                try? await Task.sleep(for: writeInterval)
+            }
+        }
+    }
+
+    /// Reads current and maximum brightness, with a bounded number of retries.
+    ///
+    /// Retries only on transient errors — a monitor that answered "unsupported" will keep saying so,
+    /// and hammering it delays every other display sharing the queue's time.
+    public func readBrightness(tolerateChecksumMismatch: Bool = false) async throws -> VCPCodec.Reply {
+        guard !invalidated else { throw DDCError.disconnected }
+
+        var lastError: DDCError = .timeout
+        for attempt in 0...maxRetries {
+            if invalidated { throw DDCError.disconnected }
+            do {
+                return try await performRead(tolerateChecksumMismatch: tolerateChecksumMismatch)
+            } catch let error as DDCError {
+                lastError = error
+                guard error.isRetryable else { throw error }
+                if attempt < maxRetries {
+                    // Linear backoff: monitors that need a second chance usually need a little more
+                    // time, not exponentially more.
+                    try? await Task.sleep(for: .milliseconds(100 * (attempt + 1)))
+                }
+            } catch let error as VCPCodec.DecodeError {
+                throw DDCError.decode(error)
+            }
+        }
+        throw lastError
+    }
+
+    private func performRead(tolerateChecksumMismatch: Bool) async throws -> VCPCodec.Reply {
+        try await transport.write(VCPCodec.getRequest(code: .brightness))
+        try await Task.sleep(for: DDC.replyDelay)
+
+        // Bound the read itself: a monitor that never answers must not hold the queue forever.
+        let bytes = try await withTimeout(readTimeout) { [transport] in
+            try await transport.read(length: VCPCodec.replyLength)
+        }
+        do {
+            return try VCPCodec.decodeReply(
+                bytes, expecting: .brightness, tolerateChecksumMismatch: tolerateChecksumMismatch)
+        } catch let error as VCPCodec.DecodeError {
+            throw DDCError.decode(error)
+        }
+    }
+}
+
+/// Races an operation against a deadline, cancelling the loser.
+///
+/// `Task.sleep` inside the transport respects cancellation, so a timed-out read does not leave a
+/// detached task still talking to the bus.
+func withTimeout<T: Sendable>(
+    _ duration: Duration,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await operation() }
+        group.addTask {
+            try await Task.sleep(for: duration)
+            throw DDCError.timeout
+        }
+        guard let result = try await group.next() else { throw DDCError.timeout }
+        group.cancelAll()
+        return result
+    }
+}
