@@ -180,32 +180,6 @@ final class MetadataBackendTests: XCTestCase {
         XCTAssertEqual(AppleSiliconDisplayMetadataBackend.pnpCodeToVendorID("APP"), 0x0610)
     }
 
-    // MARK: - Intel
-
-    func testParsesIntelPropertiesAndPrefersEDIDForMissingFields() throws {
-        let record = try XCTUnwrap(IntelDisplayMetadataBackend.parse(
-            properties: ["DisplayVendorID": 4268, "DisplaySerialNumber": 0],
-            edid: Fixtures.makeEDID(),
-            registryEntryID: 0x2002))
-        XCTAssertEqual(record.vendorID, 4268)
-        XCTAssertEqual(record.productID, 0xD0A1, "product ID came from the EDID")
-        XCTAssertEqual(record.serialNumber, 0x1234_5678, "a zero registry serial is replaced by the EDID's")
-        XCTAssertEqual(record.nativePixelWidth, 3840)
-        XCTAssertTrue(record.hasStrongDiscriminator)
-    }
-
-    func testResolvesTheLocalizedProductNameDictionary() {
-        XCTAssertEqual(
-            IntelDisplayMetadataBackend.localizedProductName(["en_US": "DELL U2723QE"]),
-            "DELL U2723QE")
-        XCTAssertEqual(IntelDisplayMetadataBackend.localizedProductName("Plain String"), "Plain String")
-        XCTAssertNil(IntelDisplayMetadataBackend.localizedProductName(42))
-    }
-
-    func testIntelParseNeedsAtLeastOneIdentifyingField() {
-        XCTAssertNil(IntelDisplayMetadataBackend.parse(properties: [:], edid: nil, registryEntryID: nil))
-    }
-
     // MARK: - Registry value coercion
 
     func testRegistryUInt32AcceptsEveryRepresentationIOKitUses() {

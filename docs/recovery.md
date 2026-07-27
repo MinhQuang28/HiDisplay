@@ -28,11 +28,12 @@ The app creates a recovery package **before** anything is written:
 └── install/            the override file, named exactly as it must be on disk
 ```
 
-Keep it until the override has survived a logout and a sleep/wake cycle.
+Keep it until the override has survived a reconnect (or logout) and a sleep/wake cycle.
 
 ## Route 1 — the Mac boots normally
 
-Double-click `restore.command`, enter your password, log out and back in (a restart is not required).
+Double-click `restore.command`, enter your password, then unplug the display and plug it back in.
+Logging out works too; a restart is not required.
 
 The script verifies the backup's SHA-256 against the manifest before restoring it, checks the target is
 inside `/Library/Displays/Contents/Resources/Overrides`, refuses to touch `/System`, and never deletes a
@@ -48,8 +49,6 @@ server that fails. Use Recovery.
 1. Shut down. Hold the power button until *Loading startup options* appears.
 2. Choose **Options → Continue** to enter macOS Recovery.
 3. **Utilities → Terminal**.
-
-**Intel:** hold ⌘R at power-on, then Utilities → Terminal.
 
 In the Terminal, the normal disk is mounted under `/Volumes`. Find its name:
 

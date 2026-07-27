@@ -56,8 +56,9 @@ public enum OverrideValidator {
     /// was not a safety limit, it was a guess — and it would have blocked exactly the "give me the full
     /// ladder" case this feature exists for.
     ///
-    /// 128 still bounds the damage (each entry also emits a 1× backing declaration, so the file stays
-    /// far under `OverrideInstaller.maximumOverrideBytes`) while covering any real panel's ladder.
+    /// 128 still bounds the damage (each entry also emits an 8-byte backing companion, so the file
+    /// stays far under `OverrideInstaller.maximumOverrideBytes`) while covering any real panel's
+    /// ladder. Confirmed on an M3: a 62-step ladder installed whole and 61 of its modes appeared.
     public static let maximumResolutionCount = 128
 
     public static func validate(
@@ -160,6 +161,22 @@ public enum OverrideValidator {
             issues.append(.init(
                 severity: .error,
                 message: "\(resolution.label) is larger than the panel's native \(native.width) × \(native.height).",
+                resolutionID: id))
+        } else if resolution.isHiDPI,
+                  resolution.logicalWidth == native.width || resolution.logicalHeight == native.height {
+            // A HiDPI mode must be strictly smaller than the panel. At exactly native it asks for a
+            // backing store twice the panel in both axes, and that is the one size measured to be
+            // dropped: on an M3 with a 2560 × 1600 monitor, 61 of a 62-step ladder appeared and the
+            // only casualty was logical 2560 × 1600 (a 5120 × 3200 backing), refused with no error,
+            // while 5056 × 3160 one step below was accepted.
+            //
+            // It is also pointless even where it works: at native the interface is the same size as
+            // the plain 1× native mode, so it buys sharpness the panel cannot show while costing four
+            // times the pixels. An error rather than a warning, so the ladder cannot offer a step
+            // that silently does nothing.
+            issues.append(.init(
+                severity: .error,
+                message: "\(resolution.label) matches the panel's native \(native.width) × \(native.height). A HiDPI mode has to be smaller than the panel — this one needs a \(resolution.pixelWidth) × \(resolution.pixelHeight) backing store and macOS drops it.",
                 resolutionID: id))
         }
 

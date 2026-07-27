@@ -73,13 +73,19 @@ public enum OverrideGenerator {
             if lhs.pixelWidth != rhs.pixelWidth { return lhs.pixelWidth < rhs.pixelWidth }
             return lhs.backingScale < rhs.backingScale
         }
-        // A HiDPI entry alone is not enough: macOS also needs the backing resolution declared as a
-        // plain 1× entry in the same file, otherwise it silently ignores the HiDPI one.
+        // A 16-byte HiDPI entry alone is not enough: the same file must also carry the backing size as
+        // a plain 8-byte entry, or macOS ignores the HiDPI one.
         //
-        // Evidence: an override written by another tool on the development machine contained 89 HiDPI
-        // entries, and **all 89** had a matching 1× entry for their backing size — no exceptions. The
-        // first version of this generator emitted only the HiDPI half; installed and rebooted, three of
-        // its four modes simply never appeared. See docs/hidpi-overrides.md.
+        // This was removed once, on the strength of a hardware probe, and had to be put back — the
+        // probe did not show what it was read as showing. It installed five backing sizes in five
+        // encodings, and all five produced modes; but the only encodings tested *standalone* were the
+        // 8-byte and 12-byte forms. All three 16-byte entries in it happened to carry an 8-byte
+        // companion too, so the probe never tested a 16-byte entry on its own and could not say the
+        // companion was redundant.
+        //
+        // What settled it: an override of 64 16-byte entries with no companions, installed on the same
+        // M3 and 2560 × 1600 panel, produced **zero** modes. The 124-entry file it replaced — the same
+        // ladder with companions — had produced 61. See docs/hidpi-overrides.md.
         var entries = ScaleResolutionCodec.encode(sorted)
         entries.append(contentsOf: backingDeclarations(for: sorted))
         entries.append(contentsOf: document.preservedEntries)
@@ -112,7 +118,7 @@ public enum OverrideGenerator {
             validation: validation)
     }
 
-    /// The 1× entries that declare each HiDPI mode's backing resolution.
+    /// The 8-byte entries that declare each HiDPI mode's backing resolution.
     ///
     /// Deduplicated and sorted so output stays deterministic, and skipped for 1× resolutions, which
     /// already are their own backing.

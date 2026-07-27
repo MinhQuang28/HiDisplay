@@ -102,7 +102,7 @@ The app behaves correctly: it reports the reason in plain language and falls bac
 | Apple Silicon | 14 | USB-C → DP | direct | TBD | TBD | TBD | TBD | TBD | |
 | Apple Silicon | 13 | USB-C → DP | direct | TBD | TBD | TBD | TBD | TBD | minimum supported |
 | Apple Silicon | 26 | Dock | DisplayLink | TBD | expect none | expect none | TBD | TBD | should fall back to shade |
-| Intel | any | DP/HDMI | direct | TBD | not implemented | not implemented | TBD | TBD | gamma fallback only |
+Intel Macs are out of scope — the app is Apple Silicon only. See [ddc.md](../../docs/ddc.md).
 
 ## What to record per test
 

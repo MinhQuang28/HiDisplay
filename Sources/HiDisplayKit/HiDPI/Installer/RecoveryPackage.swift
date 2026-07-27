@@ -73,8 +73,8 @@ public enum RecoveryPackageBuilder {
 
         HOW TO UNDO IT — NORMAL CASE
 
-            Double-click restore.command in this folder, enter your password, then log out and
-            back in. (A restart works too, but is not required.)
+            Double-click restore.command in this folder, enter your password, then unplug the
+            display and plug it back in. (Logging out works too; a restart is not required.)
 
         HOW TO UNDO IT — IF THE MAC WILL NOT BOOT TO A USABLE SCREEN
 
@@ -89,11 +89,13 @@ public enum RecoveryPackageBuilder {
 
             5. Restart. (From Recovery there is no session to log out of, so this is the way back.)
 
-        WHY A RESTART IS NEEDED
+        WHY NOTHING HAPPENS UNTIL YOU DO ONE OF THOSE
 
-            macOS reads display overrides when the window server starts, which happens at login.
-            Changing the file has no effect until then — so logging out and back in is enough,
-            and a full restart is only the more familiar way to get the same thing.
+            macOS reads a display override when the display is attached, and again when the window
+            server starts at login. Editing the file changes nothing on its own. Reconnecting an
+            external monitor is the fastest way to apply it and closes none of your apps; logging
+            out does the same for every display, including a built-in one. A full restart is only
+            the more familiar way to get the same thing.
 
         THIS FOLDER IS SAFE TO KEEP
 
@@ -164,7 +166,7 @@ public enum RecoveryPackageBuilder {
         \(existed ? restoreExistingBranch() : removeAddedBranch())
 
         echo
-        echo "Done. Log out and back in for the change to take effect. A restart is not required."
+        echo "Done. Reconnect the display, or log out and back in, for the change to take effect."
         """
     }
 

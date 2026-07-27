@@ -11,7 +11,7 @@ import SwiftUI
 @MainActor
 final class AppModel: ObservableObject {
 
-    static let version = "0.4.0"
+    static let version = "0.5.0"
     /// One instance for the process. `AppDelegate` needs to reach the same object the scene shows in
     /// order to tear down shade windows and flush profiles on quit.
     static let shared = AppModel()
@@ -72,6 +72,13 @@ final class AppModel: ObservableObject {
 
         discovery.$ambiguousKeys
             .assign(to: &$ambiguousKeys)
+
+        // Undebounced, so a dimmed display is not left at full brightness for the length of the
+        // settle delay every time the resolution changes. Write-only and synchronous — see
+        // `DisplayDiscoveryService.reconfigured`.
+        discovery.reconfigured
+            .sink { [weak self] in self?.brightness.reapplySoftwareDimming() }
+            .store(in: &cancellables)
 
         discovery.settled
             .sink { [weak self] displays in
@@ -286,6 +293,8 @@ final class AppModel: ObservableObject {
             lastError = "Could not change resolution: \(message)"
         }
         // A resolution change invalidates cached frames, and shade overlays are positioned from them.
+        // It also clears the gamma ramp, which `handleDisplaysChanged` puts back — the reconfiguration
+        // callback normally gets there first, but this path does not depend on that.
         discovery.refreshNow()
         brightness.handleDisplaysChanged(displays)
     }

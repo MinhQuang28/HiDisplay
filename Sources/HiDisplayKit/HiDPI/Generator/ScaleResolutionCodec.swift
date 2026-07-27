@@ -85,8 +85,27 @@ public struct ScaleResolutionEntry: Equatable, Sendable {
 /// **Known from real files:** the byte layout, that `0x00200000` means HiDPI, that the 16-byte form
 /// stores backing pixels, that the plist stores vendor/product as decimal while the path uses hex.
 ///
+/// **Known from hardware** (M3, macOS 26.5.2, 2560 × 1600 external panel):
+///
+/// * A standalone 8-byte entry produces a 2× HiDPI mode at half the stored size — `2880 × 1800` came
+///   back as `1440 × 900 HiDPI`, not as a 1× mode. A standalone 12-byte marker-`0x1` entry does the
+///   same. This is also the form Apple's own built-in override uses.
+/// * A 16-byte HiDPI entry **needs an 8-byte entry of the same size alongside it**. 64 16-byte entries
+///   with no companions produced zero modes; the same ladder with companions produced 61 of 62.
+/// * macOS honours a backing store larger than the panel — 3840 × 2400 on a 2560 × 1600 display — so
+///   there is no native-size ceiling on scaled modes.
+///
 /// **Not known:** what the marker word means, why both `0x1` and `0x9` appear with the same flags,
-/// what `0x00800000` in `0x00a00000` does, and why some entries carry a stray ninth byte.
+/// what `0x00800000` in `0x00a00000` does, and why some entries carry a stray ninth byte. Nor whether
+/// the 16-byte entry contributes anything at all when its 8-byte companion is present — the standalone
+/// 8-byte result suggests it may not, but "emit both" is the combination measured to work at scale and
+/// is what every override on this machine does. Also unknown is where the upper bound sits: a
+/// 5120 × 3200 backing was silently dropped while 5056 × 3160 was accepted, and one data point is not
+/// a rule.
+///
+/// An earlier revision of this comment asserted the four encodings were interchangeable and that the
+/// companion was redundant. That came from a probe in which every 16-byte entry happened to carry a
+/// companion, so it could not have shown any such thing. Acting on it broke a working install.
 ///
 /// **Not Apple-documented at all.** Nothing here is contractual.
 ///
@@ -95,8 +114,8 @@ public struct ScaleResolutionEntry: Equatable, Sendable {
 /// * `decode` preserves every entry it cannot fully model, and `ScaleResolutionEntry.encoded()`
 ///   reproduces the original bytes — so rewriting a file never silently drops another tool's modes.
 /// * `encode` emits only the one form that a working override is known to use: 16 bytes with
-///   marker `0x1` and flags `0x00200000` for HiDPI, 8 bytes for 1×. The app does not invent forms it
-///   cannot explain.
+///   marker `0x1` and flags `0x00200000` for HiDPI, 8 bytes for 1× and for the backing companions
+///   `OverrideGenerator` pairs with every HiDPI entry. The app does not invent forms it cannot explain.
 public enum ScaleResolutionCodec {
 
     /// The HiDPI bit in the flags word.

@@ -51,8 +51,8 @@ final class OverrideGeneratorTests: XCTestCase {
         let (parsed, unknownKeys) = try OverrideGenerator.parseExisting(generated.data)
 
         XCTAssertTrue(unknownKeys.isEmpty)
-        // The requested modes come back, plus the 1× declaration of the HiDPI mode's backing store —
-        // without which macOS ignores the HiDPI entry entirely. See `BackingDeclarationTests`.
+        // The requested modes come back, plus the 8-byte declaration of the HiDPI mode's backing store
+        // — without which macOS ignores the HiDPI entry entirely. See `EmittedEntryTests`.
         XCTAssertEqual(
             Set(parsed.scaleResolutions.map(\.id)),
             Set(resolutions.map(\.id)).union(["3840x2160@1x"]))
@@ -85,7 +85,7 @@ final class OverrideGeneratorTests: XCTestCase {
 
         XCTAssertEqual(reparsed.preservedEntries, parsed.preservedEntries,
                        "Apple's original entries must survive untouched")
-        // The new HiDPI mode plus its 1× backing declaration.
+        // The new HiDPI mode plus its 8-byte backing declaration.
         XCTAssertEqual(reparsed.scaleResolutions.count, 2)
         XCTAssertTrue(reparsed.scaleResolutions.contains { $0.id == "1920x1080@2x" })
         XCTAssertTrue(reparsed.scaleResolutions.contains { $0.id == "3840x2160@1x" })
@@ -278,13 +278,16 @@ final class OverridePathTests: XCTestCase {
     }
 }
 
-/// The rule that only hardware testing revealed.
+/// Every HiDPI entry needs its backing size repeated as a plain 8-byte entry.
 ///
-/// A HiDPI entry is ignored by macOS unless the same file also declares its backing resolution as a
-/// plain 1× entry. The first version of this generator emitted only the HiDPI half; installed on a real
-/// machine and rebooted, three of its four modes never appeared. An override written by another tool on
-/// the same machine had 89 HiDPI entries and a matching 1× entry for every single one.
-final class BackingDeclarationTests: XCTestCase {
+/// Measured twice, the second time the hard way. A 62-step ladder written as 16-byte HiDPI entries
+/// *with* 8-byte companions produced 61 modes on an M3 with a 2560 × 1600 panel. The same ladder with
+/// the companions removed produced **zero**, and the removal had been justified by a probe that never
+/// tested a 16-byte entry standalone — all three of its 16-byte entries carried companions.
+///
+/// So this file asserts the pairing, and the assertions exist because deleting it silently broke a
+/// working install rather than failing a test.
+final class EmittedEntryTests: XCTestCase {
 
     private func entries(for resolutions: [ScaledResolution]) throws -> (oneX: Set<String>, hiDPI: [(Int, Int)]) {
         let generated = OverrideGenerator.generate(
@@ -306,7 +309,7 @@ final class BackingDeclarationTests: XCTestCase {
         return (oneX, hiDPI)
     }
 
-    func testEveryHiDPIEntryGetsAMatching1xBackingEntry() throws {
+    func testEveryHiDPIEntryGetsAMatching8ByteBackingEntry() throws {
         let result = try entries(for: [
             ScaledResolution(logicalWidth: 1680, logicalHeight: 1050),
             ScaledResolution(logicalWidth: 1920, logicalHeight: 1200),
@@ -318,7 +321,7 @@ final class BackingDeclarationTests: XCTestCase {
         for (width, height) in result.hiDPI {
             XCTAssertTrue(
                 result.oneX.contains("\(width)x\(height)"),
-                "HiDPI backing \(width)x\(height) has no 1× declaration — macOS would ignore the mode")
+                "HiDPI backing \(width)x\(height) has no 8-byte companion — macOS ignores the mode")
         }
     }
 
@@ -331,11 +334,7 @@ final class BackingDeclarationTests: XCTestCase {
     }
 
     func testNoDuplicateBackingWhenTheSameSizeIsRequestedTwice() throws {
-        // Two HiDPI modes cannot share a backing size, but a requested 1× mode can collide with one.
-        let result = try entries(for: [
-            ScaledResolution(logicalWidth: 2048, logicalHeight: 1280, backingScale: 2),
-            ScaledResolution(logicalWidth: 4096, logicalHeight: 2560, backingScale: 1),
-        ])
+        // A requested 1× mode can collide with a HiDPI mode's backing size; it must be emitted once.
         let generated = OverrideGenerator.generate(
             DisplayOverrideDocument(
                 vendorID: 0x10AC, productID: 0xD0A1,
@@ -347,7 +346,6 @@ final class BackingDeclarationTests: XCTestCase {
             from: generated.data, options: [], format: nil) as? [String: Any])
         let blobs = try XCTUnwrap(plist["scale-resolutions"] as? [Data])
         XCTAssertEqual(blobs.count, Set(blobs).count, "no duplicate entries")
-        XCTAssertTrue(result.oneX.contains("4096x2560"))
     }
 
     func testPlain1xResolutionsGetNoExtraEntry() throws {
@@ -356,6 +354,17 @@ final class BackingDeclarationTests: XCTestCase {
         ])
         XCTAssertTrue(result.hiDPI.isEmpty)
         XCTAssertEqual(result.oneX, ["2560x1600"], "a 1× mode is already its own backing")
+    }
+
+    /// The install that proved the pairing is required: a full ladder must emit two entries per step.
+    func testTheFullLadderGeneratesAPairPerStep() throws {
+        let ladder = ResolutionPresets.scalingSteps(nativePixels: (width: 2560, height: 1600))
+        let generated = OverrideGenerator.generate(
+            DisplayOverrideDocument(vendorID: 0x10AC, productID: 0xD0A1, scaleResolutions: ladder))
+        let plist = try XCTUnwrap(PropertyListSerialization.propertyList(
+            from: generated.data, options: [], format: nil) as? [String: Any])
+        let blobs = try XCTUnwrap(plist["scale-resolutions"] as? [Data])
+        XCTAssertEqual(blobs.count, ladder.count * 2)
     }
 
     func testOutputStaysDeterministic() {
@@ -372,10 +381,12 @@ final class BackingDeclarationTests: XCTestCase {
     }
 }
 
-/// The full ladder — every aspect-correct step, each with its 1× backing declaration.
+/// The full ladder — every aspect-correct step.
 ///
 /// The 32-resolution cap this replaced was a guess, not a measurement. Real hardware accepted an
 /// override declaring 89 HiDPI modes, so the cap was blocking the exact case the feature exists for.
+/// Later confirmed directly: a 62-entry override generated by this app installed on an M3 and 61 of
+/// its 62 modes appeared.
 final class FullLadderTests: XCTestCase {
 
     private let panel = (width: 2560, height: 1600)
@@ -404,7 +415,7 @@ final class FullLadderTests: XCTestCase {
         }
     }
 
-    func testTheLadderSpansThirtyPercentToNativeWidth() throws {
+    func testTheLadderSpansThirtyPercentToJustUnderNativeWidth() throws {
         let ladder = ResolutionPresets.scalingSteps(nativePixels: panel)
         let first = try XCTUnwrap(ladder.first)
         let last = try XCTUnwrap(ladder.last)
@@ -412,8 +423,11 @@ final class FullLadderTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(
             Double(first.logicalWidth) / Double(panel.width), ResolutionPresets.smallestScaleFraction,
             "\(first.label) is below the floor — those sizes are unusably large and nobody picks them")
-        XCTAssertEqual(last.logicalWidth, panel.width,
-                       "the top of the slider is the panel's own size rendered HiDPI")
+        XCTAssertLessThan(last.logicalWidth, panel.width,
+                          "a HiDPI mode at the panel's own size is rejected, so the ladder stops below it")
+        XCTAssertGreaterThan(
+            Double(last.logicalWidth) / Double(panel.width), 0.95,
+            "\(last.label) — the top of the slider should still be the most desktop space available")
     }
 
     /// Thinning must cost granularity, never a stop someone is actually aiming for.
@@ -422,7 +436,9 @@ final class FullLadderTests: XCTestCase {
 
         XCTAssertTrue(widths.contains(panel.width / 2),
                       "the pixel-perfect step (\(panel.width / 2)) is the whole point of HiDPI")
-        XCTAssertTrue(widths.contains(panel.width), "native width rendered HiDPI must survive")
+        XCTAssertFalse(widths.contains(panel.width),
+                       "native width rendered HiDPI is rejected by the validator and must not be offered")
+        XCTAssertTrue(widths.contains(2048), "dropping the native step must not shift the rest of the grid")
         for fraction in ResolutionPresets.landmarkFractions {
             let width = Int((Double(panel.width) * fraction).rounded())
             guard width % 16 == 0 else { continue } // 16:10 → 16 px per step
@@ -441,7 +457,8 @@ final class FullLadderTests: XCTestCase {
         }
     }
 
-    func testEveryLadderEntryGetsItsBackingDeclaration() throws {
+    /// Every step becomes a HiDPI entry plus its 8-byte backing companion. See `EmittedEntryTests`.
+    func testEveryLadderStepBecomesAHiDPIEntryAndItsBacking() throws {
         let ladder = ResolutionPresets.scalingSteps(nativePixels: panel)
         let generated = OverrideGenerator.generate(
             DisplayOverrideDocument(vendorID: 0x10AC, productID: 0xD0A1, scaleResolutions: ladder),
@@ -460,9 +477,11 @@ final class FullLadderTests: XCTestCase {
         }
 
         XCTAssertEqual(hiDPI.count, ladder.count)
-        for (width, height) in hiDPI {
-            XCTAssertTrue(oneX.contains("\(width)x\(height)"),
-                          "backing \(width)x\(height) undeclared — macOS would ignore this mode")
+        for (step, entry) in zip(ladder, hiDPI) {
+            XCTAssertEqual(entry.0, step.logicalWidth * 2)
+            XCTAssertEqual(entry.1, step.logicalHeight * 2)
+            XCTAssertTrue(oneX.contains("\(entry.0)x\(entry.1)"),
+                          "backing \(entry.0)x\(entry.1) undeclared — macOS would ignore this mode")
         }
     }
 

@@ -48,10 +48,15 @@ struct DisplaysSettingsTab: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         detailHeader(display)
-                        resolutionSection(display)
+                        // The built-in panel is macOS's, for resolution as much as for brightness.
+                        // Duplicating its resolution picker here adds a second place to change one
+                        // setting, with none of System Settings' safeguards — and mode changes clear
+                        // the gamma ramp, so the app would be causing a flash on a display it does not
+                        // otherwise manage. External displays are the whole point of this app.
                         if display.isBuiltIn {
-                            builtInBrightnessNote
+                            builtInNote
                         } else {
+                            resolutionSection(display)
                             controllerPicker(display)
                             probeDetails(display)
                         }
@@ -163,13 +168,14 @@ struct DisplaysSettingsTab: View {
     /// Phrased as a boundary rather than a limitation, because it is one: macOS already owns that
     /// value through the brightness keys, Control Center and ambient-light adaptation, and a second
     /// owner could only fight them — on the one screen the user cannot unplug to recover.
-    private var builtInBrightnessNote: some View {
+    private var builtInNote: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Brightness").font(.headline)
+            Text("Managed by macOS").font(.headline)
             Text(BrightnessCoordinator.builtInExplanation)
                 .font(.callout).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("Use the brightness keys, Control Center, or System Settings → Displays for this one.")
+            Text("Resolution and brightness for the built-in display live in System Settings → "
+                + "Displays, Control Center, or the brightness keys. HiDisplay does not duplicate them.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }

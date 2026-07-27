@@ -84,16 +84,19 @@ still get *different* keys, but **both** are marked ambiguous — including the 
 otherwise look confident merely because it inherited the first coin flip. The menu surfaces this with a
 "This is a separate display" action.
 
-## Two metadata backends, chosen at runtime
+## One metadata backend, behind a protocol that could hold more
 
-Intel exposes displays through `IODisplayConnect` with a raw `IODisplayEDID`. Apple Silicon exposes them
-through DCP nodes carrying a `DisplayAttributes` dictionary. These are different implementations, not one
-implementation with a branch — which is why they were both written up front rather than deferring Intel
-past the MVP, as the original plan proposed.
+Apple Silicon exposes displays through DCP nodes carrying a `DisplayAttributes` dictionary.
+`AppleSiliconDisplayMetadataBackend` reads it, and `CompositeDisplayMetadataBackend` tries backends in
+order and takes the first non-empty result.
 
-Selection is by which backend actually returns records, never `#if arch(arm64)`. That keeps both paths
-compiled everywhere so tests exercise both from fixture dictionaries, and keeps the app working under
-Rosetta or on hardware that exposes both branches.
+There used to be a second backend reading `IODisplayConnect` with a raw `IODisplayEDID`, the Intel-era
+path. It went when the project narrowed to Apple Silicon — that node has no matching services for
+external displays there, so it was dead weight that still had to be maintained and tested.
+
+The protocol and the composite stay. They are the seam the tests inject fixture dictionaries through,
+and selection is still by which backend returns records rather than `#if arch(arm64)` — so if a future
+macOS moves external displays to another branch, that is a new backend rather than a rewrite.
 
 Neither backend needs a private symbol — both are ordinary IORegistry property reads.
 

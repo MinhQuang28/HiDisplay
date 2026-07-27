@@ -37,7 +37,6 @@ print("DisplayServices  : \(DisplayServicesShim.shared.isAvailable ? "available"
 heading("Metadata backends")
 for backend in [
     AppleSiliconDisplayMetadataBackend() as DisplayMetadataBackend,
-    IntelDisplayMetadataBackend(),
 ] {
     let records = backend.enumerate()
     print("\(backend.name): \(records.count) record(s)")

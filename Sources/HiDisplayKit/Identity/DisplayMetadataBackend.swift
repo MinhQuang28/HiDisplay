@@ -56,11 +56,11 @@ public struct DisplayMetadata: Equatable, Sendable {
 
 /// One way of reading display metadata out of the system.
 ///
-/// There are two implementations because Intel and Apple Silicon expose displays through completely
-/// different registry branches — see docs/private-apis.md. The backend is chosen at runtime by which
-/// one actually returns records, never by `#if arch(arm64)`: that keeps both code paths compiled on
-/// every machine so tests can exercise them, and keeps the app working under Rosetta or on future
-/// hardware that exposes both branches.
+/// The protocol survives having only one implementation: it is the seam the tests inject fixtures
+/// through, and it is where a second registry branch would be added if a future macOS moves external
+/// displays somewhere new — see docs/private-apis.md. There was a second implementation reading
+/// `IODisplayConnect`, the Intel-era node; it was removed when the project narrowed to Apple Silicon,
+/// where that node has no matching services for external displays.
 public protocol DisplayMetadataBackend {
     var name: String { get }
     func enumerate() -> [DisplayMetadata]
@@ -73,7 +73,6 @@ public struct CompositeDisplayMetadataBackend: DisplayMetadataBackend {
 
     public init(backends: [DisplayMetadataBackend] = [
         AppleSiliconDisplayMetadataBackend(),
-        IntelDisplayMetadataBackend(),
     ]) {
         self.backends = backends
     }

@@ -21,6 +21,14 @@ public final class DisplayDiscoveryService: ObservableObject {
     /// Fires once the configuration has stopped changing. Payload is the settled display list.
     public let settled = PassthroughSubject<[DisplayDevice], Never>()
 
+    /// Fires the moment a reconfiguration lands, with no debounce and no display list.
+    ///
+    /// For work that must happen before the user can see the gap and that is too cheap to be worth
+    /// coalescing — restoring a gamma ramp macOS just cleared. Anything that needs to *read* the new
+    /// configuration must use `settled` instead; this fires while the list is still in flux, which is
+    /// why it carries no payload.
+    public let reconfigured = PassthroughSubject<Void, Never>()
+
     /// Fast enough that unplugging feels instant, slow enough to collapse the burst of callbacks a
     /// single replug produces (macOS emits several per display, per change flag).
     public var refreshDebounce: TimeInterval = 0.35
@@ -75,6 +83,11 @@ public final class DisplayDiscoveryService: ObservableObject {
     func scheduleRefresh() {
         refreshWorkItem?.cancel()
         settleWorkItem?.cancel()
+
+        // Before either timer: a reconfiguration has already cleared any gamma ramp the app applied,
+        // so every millisecond spent debouncing is a millisecond of a display sitting at full
+        // brightness. Subscribers to this must do only cheap, write-only work.
+        reconfigured.send()
 
         let refresh = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated { self?.refreshNow() }

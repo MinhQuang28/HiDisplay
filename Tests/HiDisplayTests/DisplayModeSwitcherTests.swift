@@ -138,6 +138,41 @@ final class ScalingStepsTests: XCTestCase {
         }
     }
 
+    /// A HiDPI mode has to be strictly smaller than the panel, so the ladder must stop short of it.
+    ///
+    /// At exactly native the backing store is twice the panel in both axes — the one size measured to
+    /// be dropped by macOS — and it shows no more desktop than the plain 1× native mode.
+    func testTheLadderStopsBelowTheNativeSize() {
+        for panel in [panel, (width: 3840, height: 2160), (width: 3024, height: 1964), (width: 1920, height: 1080)] {
+            guard let top = ResolutionPresets.scalingSteps(nativePixels: panel).last else { continue }
+            XCTAssertLessThan(top.logicalWidth, panel.width, "\(panel) ladder reached native width")
+            XCTAssertLessThan(top.logicalHeight, panel.height, "\(panel) ladder reached native height")
+        }
+    }
+
+    func testAHiDPIModeAtTheNativeSizeIsRejected() {
+        let report = OverrideValidator.validate(
+            DisplayOverrideDocument(
+                vendorID: 0x10AC, productID: 0xD0A1,
+                scaleResolutions: [
+                    ScaledResolution(logicalWidth: panel.width, logicalHeight: panel.height, backingScale: 2)
+                ]),
+            nativePixelSize: panel)
+        XCTAssertFalse(report.isInstallable)
+    }
+
+    /// The same size at 1× is the panel's own native mode and must stay perfectly legal.
+    func testAPlain1xModeAtTheNativeSizeIsStillAllowed() {
+        let report = OverrideValidator.validate(
+            DisplayOverrideDocument(
+                vendorID: 0x10AC, productID: 0xD0A1,
+                scaleResolutions: [
+                    ScaledResolution(logicalWidth: panel.width, logicalHeight: panel.height, backingScale: 1)
+                ]),
+            nativePixelSize: panel)
+        XCTAssertTrue(report.isInstallable, "\(report.errors.map(\.message))")
+    }
+
     func testStepsRunLargestTextToMostSpace() {
         let steps = ResolutionPresets.scalingSteps(nativePixels: panel)
         for (earlier, later) in zip(steps, steps.dropFirst()) {
@@ -198,6 +233,61 @@ final class ScalingStepsTests: XCTestCase {
 
 /// Brightness-key targeting. Pure logic, because "which screen does F1 dim" is exactly the kind of
 /// thing that is obvious until there are two monitors and a pointer in the gap between them.
+/// Native size must not drift once an override is installed.
+///
+/// The regression: `nativePixelSize` was the largest mode by pixel area, which a HiDPI mode wins by
+/// definition — it renders into a backing store bigger than the panel. On real hardware the app read a
+/// 2560 × 1600 monitor as 5056 × 3160 and the 3024 × 1964 built-in as 3600 × 2338. Since the ladder is
+/// generated from the native size, each reinstall would have been built from the last one's output.
+final class NativePixelSizeTests: XCTestCase {
+
+    private func device(modes: [DisplayMode]) -> DisplayDevice {
+        DisplayDevice(
+            identity: DisplayIdentity(cgDisplayID: 7, vendorID: 0x4A8B, productID: 0x2560),
+            name: "Test", isBuiltIn: false, isOnline: true, isMain: false,
+            availableModes: modes,
+            frame: CGRect(x: 0, y: 0, width: 2560, height: 1600))
+    }
+
+    private func mode(_ width: Int, _ height: Int, scale: Int) -> DisplayMode {
+        DisplayMode(
+            width: width, height: height,
+            pixelWidth: width * scale, pixelHeight: height * scale, refreshRate: 60)
+    }
+
+    func testNativeSizeIsTheLargest1xModeNotTheLargestBackingStore() {
+        let device = device(modes: [
+            mode(1280, 800, scale: 1),
+            mode(2560, 1600, scale: 1),   // the panel
+            mode(2528, 1580, scale: 2),   // 5056 × 3160 backing, from an installed override
+            mode(1920, 1200, scale: 2),   // 3840 × 2400 backing
+        ])
+        XCTAssertEqual(device.nativePixelSize?.width, 2560)
+        XCTAssertEqual(device.nativePixelSize?.height, 1600)
+    }
+
+    /// Reading the ladder back out of its own effect is what made this a loop rather than a one-off.
+    func testTheLadderDoesNotGrowWhenItsOwnModesAreVisible() {
+        let panel = (width: 2560, height: 1600)
+        let ladder = ResolutionPresets.scalingSteps(nativePixels: panel)
+        let withOverrideInstalled = device(
+            modes: [mode(2560, 1600, scale: 1)]
+                + ladder.map { mode($0.logicalWidth, $0.logicalHeight, scale: 2) })
+
+        let native = try? XCTUnwrap(withOverrideInstalled.nativePixelSize)
+        XCTAssertEqual(native?.width, panel.width)
+        XCTAssertEqual(
+            ResolutionPresets.scalingSteps(nativePixels: (native!.width, native!.height)).map(\.id),
+            ladder.map(\.id),
+            "regenerating from a display that already has the override must produce the same ladder")
+    }
+
+    func testFallsBackToTheLargestModeWhenThereIsNo1xMode() {
+        let device = device(modes: [mode(1280, 800, scale: 2), mode(1920, 1200, scale: 2)])
+        XCTAssertEqual(device.nativePixelSize?.width, 3840)
+    }
+}
+
 final class BrightnessKeyResolverTests: XCTestCase {
 
     private func display(

@@ -60,6 +60,30 @@ public final class GammaBrightnessController: BrightnessController, @unchecked S
         lock.withLock { appliedFactors[display.cgDisplayID] = factor }
     }
 
+    /// Re-writes every gamma ramp this controller has applied.
+    ///
+    /// macOS resets a display's gamma table on reconfiguration — changing resolution is enough. The
+    /// dimming vanishes, the screen jumps to full brightness, and it stays there until something puts
+    /// the ramp back. That used to be the settle handler, two seconds later, which read as the screen
+    /// flashing bright and then dimming again on every resolution change.
+    ///
+    /// Synchronous and allocation-free on purpose: this runs straight off the reconfiguration
+    /// callback, where the whole point is to close the gap before it is visible. One
+    /// `CGSetDisplayTransferByFormula` per dimmed display, and there is normally one.
+    ///
+    /// Safe to call at any time: it only rewrites values already applied, so a display that was never
+    /// dimmed is not touched, and a redundant call is a no-op the user cannot see.
+    public func reapplyAll() {
+        let factors = lock.withLock { appliedFactors }
+        for (displayID, factor) in factors {
+            CGSetDisplayTransferByFormula(
+                displayID,
+                0, factor, 1.0,
+                0, factor, 1.0,
+                0, factor, 1.0)
+        }
+    }
+
     public func reset(display: DisplayDevice) async {
         let hadFactor = lock.withLock { appliedFactors.removeValue(forKey: display.cgDisplayID) != nil }
         guard hadFactor else { return }

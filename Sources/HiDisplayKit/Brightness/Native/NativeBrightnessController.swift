@@ -8,8 +8,11 @@ import IOKit
 ///
 /// 1. `DisplayServicesSetBrightness` — the only thing that works for the built-in display on Apple
 ///    Silicon. Private, resolved via `DisplayServicesShim`.
-/// 2. `IODisplaySetFloatParameter("brightness")` — the public Intel-era path. Kept because it is
-///    public and costs nothing, but it is a no-op on Apple Silicon built-in panels.
+/// 2. `IODisplaySetFloatParameter("brightness")` — the older public API. It needs an `IODisplayConnect`
+///    service, which Apple Silicon does not publish for external displays, so in practice this finds
+///    nothing and returns immediately. Kept rather than deleted with the rest of the Intel code: it is
+///    public API, the lookup costs one registry match, and it is the only fallback if a future macOS
+///    or a DisplayLink-style driver does publish those services again.
 ///
 /// If neither works the probe reports unsupported and the resolver drops to gamma dimming.
 public final class NativeBrightnessController: BrightnessController {
@@ -56,7 +59,7 @@ public final class NativeBrightnessController: BrightnessController {
         // some remembered value here would fight the user's own brightness keys.
     }
 
-    // MARK: - Intel / legacy path
+    // MARK: - Legacy IODisplayConnect path
 
     /// Finds the `IODisplayConnect` service for a display and reads its float brightness parameter.
     ///

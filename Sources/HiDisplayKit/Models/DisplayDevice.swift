@@ -69,7 +69,20 @@ public struct DisplayDevice: Identifiable, Hashable, Sendable {
 
     public let derived: DerivedModeInfo?
 
-    /// Native panel resolution, taken as the largest backing-pixel mode.
+    /// Native panel resolution, taken as the largest **1×** mode.
+    ///
+    /// Not the largest mode overall, which is what this used to be and which is self-poisoning: a
+    /// HiDPI mode renders into a backing store larger than the panel and scales it down, so once an
+    /// override adds one, "largest mode" reports that backing store as the panel size. Measured on
+    /// 2026-07-27 with an override installed, the app believed a 2560 × 1600 monitor was 5056 × 3160
+    /// and the built-in 3024 × 1964 panel was 3600 × 2338 (that one from Apple's own override). Since
+    /// the ladder is generated *from* the native size, every reinstall would have grown the previous
+    /// one.
+    ///
+    /// A 1× mode's framebuffer is its timing, so no 1× mode can exceed the panel — macOS synthesises
+    /// smaller 1× sizes but never larger, and `OverrideValidator` rejects a requested 1× mode above
+    /// native. That makes the largest 1× mode stable whether or not an override is installed: it read
+    /// 2560 × 1600 and 3024 × 1964 on the same two displays, before and after.
     public var nativePixelSize: (width: Int, height: Int)? {
         guard let derived else { return nil }
         return (derived.nativePixelWidth, derived.nativePixelHeight)
@@ -83,9 +96,13 @@ public struct DisplayDevice: Identifiable, Hashable, Sendable {
     }
 
     static func deriveModeInfo(from modes: [DisplayMode]) -> DerivedModeInfo? {
-        guard let largest = modes.max(by: {
+        let byPixelArea: (DisplayMode, DisplayMode) -> Bool = {
             $0.pixelWidth * $0.pixelHeight < $1.pixelWidth * $1.pixelHeight
-        }) else { return nil }
+        }
+        // 1× modes only — see `nativePixelSize`. The fallback covers a display that reports nothing
+        // but scaled modes, where the largest mode is still the best guess available.
+        let largestNative = modes.filter { !$0.isHiDPI }.max(by: byPixelArea)
+        guard let largest = largestNative ?? modes.max(by: byPixelArea) else { return nil }
 
         var sizes = Set<String>()
         var hiDPICount = 0

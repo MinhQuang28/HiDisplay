@@ -43,6 +43,30 @@ public protocol DDCTransport: Sendable {
     func read(length: Int) async throws -> [UInt8]
 }
 
+/// Picks the transport that can actually reach a display.
+///
+/// One transport, because HiDisplay is Apple Silicon only. The Intel route — `IOFramebuffer`'s
+/// `IOI2CSendRequest` — was never implemented here (it needs a C shim for `IOI2CRequest`, whose ABI
+/// cannot be hand-declared safely) and has now been removed rather than left as a stub that always
+/// reports `.unsupported`.
+public enum DDCTransportFactory {
+
+    /// Sendable handle to `makeTransport`, so it can be used as a default argument for the injected
+    /// factory without the compiler having to assume a plain function reference is concurrency-safe.
+    public static let make: @Sendable (DisplayIdentity) -> DDCTransport? = { makeTransport(for: $0) }
+
+    /// Returns the transport if it binds, `nil` if it does not — the caller then treats the display as
+    /// having no hardware brightness control.
+    public static func makeTransport(for identity: DisplayIdentity) -> DDCTransport? {
+        let transport = AppleSiliconAVServiceTransport(identity: identity)
+        if transport.isUsable { return transport }
+
+        Log.ddcTransport.notice(
+            "no DDC transport for \(identity.stableKey, privacy: .public): \(transport.bindFailureReason ?? "unknown", privacy: .public)")
+        return nil
+    }
+}
+
 /// Records commands instead of sending them. Lives in the library, not the test target, so the debug
 /// panel can drive the whole brightness stack with no monitor attached.
 public final class FakeDDCTransport: DDCTransport, @unchecked Sendable {

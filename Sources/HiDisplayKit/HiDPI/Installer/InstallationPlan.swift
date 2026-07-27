@@ -377,10 +377,12 @@ public struct OverrideInstaller {
     static func recoveryCommand(for manifest: BackupManifest) -> String {
         guard let entry = manifest.entries.first else { return "" }
         let target = "\(manifest.overrideRoot)/\(entry.relativePath)"
-        // Ends with a logout hint rather than `reboot`: WindowServer re-reads the overrides at login,
-        // so the cheaper action is the sufficient one.
+        // Ends with a reconnect hint rather than `reboot`: macOS re-reads the override file when a
+        // display attaches, so for an external monitor the cheapest action is also the sufficient one.
+        // Logging out is named too, because a built-in panel cannot be unplugged.
+        let apply = "   # then reconnect the display, or log out and back in"
         return entry.existedBefore
-            ? "sudo cp \"<recovery-package>/backup/\(entry.relativePath)\" \"\(target)\"   # then log out and back in"
-            : "sudo rm \"\(target)\"   # then log out and back in"
+            ? "sudo cp \"<recovery-package>/backup/\(entry.relativePath)\" \"\(target)\"\(apply)"
+            : "sudo rm \"\(target)\"\(apply)"
     }
 }

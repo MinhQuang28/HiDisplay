@@ -135,11 +135,14 @@ public enum ResolutionPresets {
     /// Fractions of native width that must survive thinning, whatever the step budget.
     ///
     /// These are the sizes worth landing on exactly: `0.5` is the pixel-perfect point, where the 2×
-    /// backing store equals the panel and nothing is resampled, and `1.0` is the panel's own native
-    /// size rendered HiDPI — the two a person actually goes looking for. The quarters between them are
-    /// the familiar "looks like" stops. Losing any of these to an evenly-spaced grid would mean the
-    /// slider could not express the one setting the whole feature exists for.
-    static let landmarkFractions: [Double] = [0.5, 0.625, 0.75, 0.875, 1.0]
+    /// backing store equals the panel and nothing is resampled, and the rest are the familiar
+    /// "looks like" stops above it. Losing any of these to an evenly-spaced grid would mean the slider
+    /// could not express the one setting the whole feature exists for.
+    ///
+    /// `1.0` is deliberately absent. A HiDPI mode at the panel's own size is rejected by
+    /// `OverrideValidator` — it needs a backing store twice the panel in both axes, which macOS drops,
+    /// and it shows no more desktop than the plain 1× native mode anyway.
+    static let landmarkFractions: [Double] = [0.5, 0.625, 0.75, 0.875]
 
     /// Aspect-correct logical sizes for a panel — the domain of a scaling slider.
     ///
@@ -148,8 +151,8 @@ public enum ResolutionPresets {
     /// values. Both dimensions stay even and the aspect ratio stays exact, so no step can produce a
     /// letterboxed or unevenly-doubled mode.
     ///
-    /// The range runs from `smallestScaleFraction` of native width up to native width itself, thinned
-    /// to at most `maximumScalingSteps` entries. Thinning keeps both ends and every landmark first,
+    /// The range runs from `smallestScaleFraction` of native width up to just under native width,
+    /// thinned to at most `maximumScalingSteps` entries. Thinning keeps both ends and every landmark first,
     /// then spreads the remaining budget evenly — so reducing the count costs granularity, never a
     /// meaningful stop. It deliberately extends *below* the pixel-perfect point: those sizes are
     /// softer, but they are the "larger text" half of the slider, which is what most people reach for.
@@ -181,16 +184,25 @@ public enum ResolutionPresets {
             multiplesCovering(
                 Int((Double(native.width) * smallestScaleFraction).rounded()), step: stepWidth),
             1)
-        // Up to and including native width: at 2× that is the panel's own size rendered HiDPI, the
-        // "most space" end of every tool's slider. `OverrideValidator` allows it and only warns beyond.
         let highest = native.width / stepWidth
         guard highest >= lowest, lowest > 0 else { return [] }
 
         let multiples = thinned(from: lowest, to: highest, nativeWidth: native.width, step: stepWidth)
-        return multiples.map {
-            ScaledResolution(
-                logicalWidth: stepWidth * $0, logicalHeight: stepHeight * $0, backingScale: 2)
-        }
+        return multiples
+            // A HiDPI mode has to be strictly smaller than the panel. At exactly native it asks for a
+            // backing store twice the panel in both axes, which macOS drops, and it shows no more
+            // desktop than the plain 1× native mode for four times the pixels — `OverrideValidator`
+            // rejects it, so the ladder must not offer it.
+            //
+            // Filtered at the end rather than by lowering the range, deliberately: narrowing the range
+            // shifts the whole evenly-spaced grid down by one, which silently moved sizes people
+            // already use — 2048 × 1280 on a 2560 × 1600 panel became 2064 × 1290. Dropping the single
+            // illegal step leaves every other step exactly where it was.
+            .filter { stepWidth * $0 < native.width && stepHeight * $0 < native.height }
+            .map {
+                ScaledResolution(
+                    logicalWidth: stepWidth * $0, logicalHeight: stepHeight * $0, backingScale: 2)
+            }
     }
 
     /// How many whole `step`s it takes to reach at least `value` — the multiple at or above a bound.

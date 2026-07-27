@@ -1,31 +1,31 @@
 # DDC/CI
 
-## Two transports, because there is no shared API
+## One transport: Apple Silicon only
 
-| | Intel | Apple Silicon |
-| --- | --- | --- |
-| Route | `IOFramebuffer` → `IOI2CSendRequest` | `IOAVServiceRead/WriteI2C` |
-| In the SDK? | Yes (`IOKit/i2c/IOI2CInterface.h`) | **No** — see [private-apis.md](private-apis.md) |
-| Status here | **Not implemented** | Implemented, unverified on hardware |
+| | Apple Silicon |
+| --- | --- |
+| Route | `IOAVServiceRead/WriteI2C` |
+| In the SDK? | **No** — see [private-apis.md](private-apis.md) |
+| Status here | Implemented, unverified on hardware |
 
-### Why the Intel transport is a documented stub
+### Why there is no Intel transport
 
-`IOI2CSendRequest` takes an `IOI2CRequest` struct that is not projected into Swift, because it contains a
-function-pointer completion field. Using it requires either a C shim target or hand-declaring the struct
-layout in Swift.
+HiDisplay supports Apple Silicon only. The Intel route was never implemented, and the stub that used to
+report `.unsupported` has been removed along with the rest of the Intel code.
 
-Hand-declaring a kernel ABI struct from memory is exactly the kind of guess that becomes memory
-corruption when a field order or padding assumption is wrong. This project's own rule is not to present
-assumptions as facts, so `IntelI2CTransport` reports `.unsupported` and says why, and the brightness stack
-falls back to gamma dimming on Intel — degraded but correct.
+It was not a matter of effort. `IOI2CSendRequest` takes an `IOI2CRequest` struct that is not projected
+into Swift, because it contains a function-pointer completion field. Using it needs either a C shim
+target or a hand-declared struct layout — and hand-declaring a kernel ABI struct from memory is exactly
+the kind of guess that becomes memory corruption when a field order or padding assumption is wrong.
 
-What a real implementation needs, once an Intel test machine exists:
+If Intel support is ever wanted back, it needs:
 
 1. A C shim target exposing `IOI2CRequest` and `IOI2CSendRequest` with the **header's own** layout, so
    the ABI comes from the SDK rather than from memory.
 2. `IOFramebufferPortFromCGDisplayID`, or a vendor/product match over `IOFramebuffer` services.
 3. `IOI2CInterfaceCount` / `IOI2CCopyInterfaceForBus` / `IOI2CInterfaceOpen`, one bus at a time, with the
    connection closed on every exit path.
+4. An Intel test machine. Adding it without one would be the same guess in a new place.
 
 ## Binding to the right monitor
 

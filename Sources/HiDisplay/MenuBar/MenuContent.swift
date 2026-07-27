@@ -88,9 +88,12 @@ struct DisplaySection: View {
     /// every body evaluation, which a profiler showed happening far more often than displays change.
     private var curatedModes: [DisplayMode] { display.curatedModes }
 
+    /// External displays only. macOS owns the built-in panel's resolution as much as its brightness,
+    /// and a second control for it here would be a duplicate of System Settings without any of its
+    /// safeguards.
     @ViewBuilder
     private var resolutionPicker: some View {
-        if curatedModes.count > 1 {
+        if !display.isBuiltIn, curatedModes.count > 1 {
             Picker("Resolution", selection: Binding(
                 get: { display.currentMode.map { "\($0.width)x\($0.height)" } ?? "" },
                 set: { key in
@@ -128,9 +131,10 @@ struct DisplaySection: View {
             }
 
             if display.isBuiltIn {
-                // No slider, and no "unavailable" wording either: nothing is missing here. macOS drives
-                // this panel, and the row exists for its resolution picker.
-                Text("Brightness is managed by macOS")
+                // No slider, no resolution picker, and no "unavailable" wording: nothing is missing
+                // here. macOS drives this panel entirely. The row stays so the menu still shows the
+                // whole desk rather than pretending the laptop screen is not there.
+                Text("Managed by macOS")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if let controller {

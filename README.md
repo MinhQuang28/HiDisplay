@@ -21,7 +21,7 @@ Milestones A–E of the [implementation plan](#project-layout) are done. What wo
 | Launch at login | working |
 | Brightness: the built-in panel | **deliberately not touched** — macOS owns it ([why](#brightness)) |
 | Brightness: DDC/CI on Apple Silicon | binds correctly on hardware; **a real transaction is still unverified** — the only test display has no I2C channel |
-| Brightness: DDC/CI on Intel | **not implemented** — falls back to gamma dimming ([why](docs/ddc.md)) |
+| Intel Macs | **not supported** — the app is Apple Silicon only ([why](docs/ddc.md)) |
 | Privileged helper via `SMAppService` + XPC | not built — needs a Developer ID and notarization. Installing uses a single system authorization prompt instead ([why that is safe](docs/security.md)) |
 
 The DDC wire format is the honest gap: the transport binds and the app degrades correctly, but no
@@ -83,7 +83,7 @@ costs, and lets you pin an identity manually when it genuinely cannot tell two m
 ## Requirements
 
 - macOS 13.0 (Ventura) or later.
-- Apple Silicon recommended. Intel works for HiDPI and software dimming; Intel DDC is not implemented.
+- Apple Silicon (M-series) only. Intel Macs are not supported.
 - No permission is required for the core features — sliders, HiDPI generation and diagnostics all work
   with nothing granted. Two optional things ask: **Accessibility** for the brightness keys, and one
   **administrator prompt** at the moment you install an override. No background daemon, no helper tool.
@@ -180,7 +180,7 @@ IDE support.
 ### Documentation
 
 - [architecture.md](docs/architecture.md) — layering, identity tiers, concurrency rules
-- [ddc.md](docs/ddc.md) — wire format, throttling, why Intel is a stub
+- [ddc.md](docs/ddc.md) — wire format, throttling, why the app is Apple Silicon only
 - [hidpi-overrides.md](docs/hidpi-overrides.md) — the override format, and the survey of 3145 real entries that corrected it
 - [private-apis.md](docs/private-apis.md) — every undocumented symbol, its evidence level, and its degrade path
 - [recovery.md](docs/recovery.md) — undoing an override, including from a Recovery Terminal

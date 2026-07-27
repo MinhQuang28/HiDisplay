@@ -84,6 +84,20 @@ public final class BrightnessCoordinator: ObservableObject {
     public func handleDisplaysChanged(_ displays: [DisplayDevice]) {
         // Cheap, synchronous work only — this runs on the fast path.
         shade.reposition(displays: displays)
+        reapplySoftwareDimming()
+    }
+
+    /// Puts software dimming back after macOS has reset it.
+    ///
+    /// A display reconfiguration — a resolution change is one — clears the gamma ramp, so a dimmed
+    /// display snaps to full brightness. Restoring it from `handleSettledDisplays` meant waiting out
+    /// the two-second settle delay, which the user saw as a bright flash on every resolution change.
+    ///
+    /// Only software dimming needs this. A DDC or native controller holds its value in the monitor,
+    /// not in a table macOS owns, and re-issuing DDC writes on every reconfiguration would be slow and
+    /// would put traffic on the bus for no reason.
+    public func reapplySoftwareDimming() {
+        gamma.reapplyAll()
     }
 
     // MARK: - Probing

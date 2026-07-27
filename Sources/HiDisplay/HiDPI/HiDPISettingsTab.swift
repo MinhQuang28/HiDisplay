@@ -18,6 +18,9 @@ struct HiDPISettingsTab: View {
     @State private var scalingIndex: Double = -1
     @State private var showFullLadder = false
     @State private var showRestartPrompt = false
+    /// Whether the display just installed for can be unplugged, which decides what the apply prompt
+    /// leads with. Captured at plan time because the prompt is shown after `pendingInstall` is cleared.
+    @State private var installedDisplayIsExternal = false
     @State private var recoveryPackagePath: String?
     /// The plan awaiting confirmation, held so the alert's Install button writes exactly what was
     /// described rather than re-planning against a file that may have changed in between.
@@ -86,17 +89,26 @@ struct HiDPISettingsTab: View {
         } message: {
             Text(pendingInstall.map { Self.confirmationMessage(for: $0.plan) } ?? "")
         }
-        // Log out, not restart, as the primary action: WindowServer reads overrides when a login
-        // session starts, so a full reboot buys nothing but minutes. Restart stays as the second
-        // button because it is the instruction most guides give.
-        .alert("Log out to apply?", isPresented: $showRestartPrompt) {
+        // For an external display, unplugging it is the cheapest way to apply the override and the
+        // only one measured to work: macOS re-reads the override file when a display attaches. It
+        // costs seconds and loses nothing, so it leads. Logging out is offered because it is what
+        // every guide says and because it is the only route for a built-in panel; restart stays last
+        // because it buys nothing over a logout.
+        .alert(installedDisplayIsExternal ? "Unplug the display to apply" : "Log out to apply?",
+               isPresented: $showRestartPrompt) {
             Button("Log Out Now") { model.endSession(.logOut) }
             Button("Restart Now") { model.endSession(.restart) }
-            Button("Later", role: .cancel) {}
+            Button(installedDisplayIsExternal ? "I'll Reconnect It" : "Later", role: .cancel) {}
         } message: {
-            Text("macOS reads display overrides when your login session starts, so logging out and "
-                + "back in is enough — a restart is not required. Your open apps will be asked to "
-                + "save either way.")
+            if installedDisplayIsExternal {
+                Text("macOS re-reads display overrides when a display is attached. Unplug this monitor "
+                    + "and plug it back in — that applies the change in seconds and closes nothing. "
+                    + "Logging out works too; a restart is not required.")
+            } else {
+                Text("macOS reads display overrides when your login session starts, so logging out and "
+                    + "back in is enough — a restart is not required. Your open apps will be asked to "
+                    + "save either way.")
+            }
         }
     }
 
@@ -157,10 +169,11 @@ struct HiDPISettingsTab: View {
             Label("Read this before installing an override", systemImage: "exclamationmark.triangle.fill")
                 .font(.headline).foregroundStyle(.orange)
             Text("""
-                A display override changes a macOS configuration file. It takes effect only after a \
-                logout. Some monitors respond badly — a black screen after wake is the usual \
-                failure. The exported package includes a verified restore script and instructions that \
-                work from the macOS Recovery Terminal. Keep it until you are sure the override is good.
+                A display override changes a macOS configuration file. Nothing changes until the \
+                display is reattached — reconnect an external monitor, or log out for a built-in one. \
+                Some monitors respond badly; a black screen after wake is the usual failure. The \
+                exported package includes a verified restore script and instructions that work from \
+                the macOS Recovery Terminal. Keep it until you are sure the override is good.
                 """)
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -391,7 +404,8 @@ struct HiDPISettingsTab: View {
                     .disabled(generated?.validation.isInstallable != true)
             }
             Text("Install asks for your password once, backs up the current override first, writes the "
-                + "new one, and verifies it. It takes effect after you log out and back in.")
+                + "new one, and verifies it. It takes effect after you reconnect the display, or log "
+                + "out and back in.")
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -420,6 +434,7 @@ struct HiDPISettingsTab: View {
         exportError = nil
         recoveryPackagePath = nil
         guard let generated else { return }
+        installedDisplayIsExternal = !display.isBuiltIn
 
         do {
             pendingInstall = (try model.planInstall(generated, for: display), generated)
@@ -443,8 +458,8 @@ struct HiDPISettingsTab: View {
             parts.append("Replaced by your selection, and not carried over:\n"
                 + plan.droppedUnknownKeys.map { "  • \($0)" }.joined(separator: "\n"))
         }
-        parts.append("Takes effect after you log out and back in. To undo it without this app:\n"
-            + plan.recoveryCommand)
+        parts.append("Takes effect after you reconnect the display, or log out and back in. "
+            + "To undo it without this app:\n" + plan.recoveryCommand)
         return parts.joined(separator: "\n\n")
     }
 
@@ -513,7 +528,7 @@ struct HiDPISettingsTab: View {
                 To install:
                   sudo mkdir -p "\(OverridePaths.systemOverrideRoot)/\(OverridePaths.vendorDirectoryName(vendorID: display.identity.vendorID))"
                   sudo cp "\(stagedFile.path)" "\(OverridePaths.systemOverrideRoot)/\(generated.relativePath)"
-                  # then log out and back in (or: sudo reboot)
+                  # then unplug the display and plug it back in (or log out and back in)
 
                 To undo: run restore.command inside that folder.
                 """

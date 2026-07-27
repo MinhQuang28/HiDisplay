@@ -10,7 +10,11 @@ set of undocumented dependencies is exactly the set of call sites there.
 
 ## Why public APIs are not sufficient
 
-| Capability | Intel | Apple Silicon |
+HiDisplay targets Apple Silicon only. The Intel column is kept for contrast: on Intel every one of these
+had a public answer, which is precisely why the Apple Silicon versions are undocumented rather than
+merely obscure.
+
+| Capability | Intel (not supported) | Apple Silicon |
 | --- | --- | --- |
 | DDC/CI I2C | `IOI2CSendRequest` via `IOFramebuffer` (in the SDK) | **`IOAVService*` — not in the SDK** |
 | Built-in display brightness | `IODisplaySetFloatParameter("brightness")` (in the SDK) | **`DisplayServicesSetBrightness` — private framework** |
