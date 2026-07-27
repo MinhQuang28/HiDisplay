@@ -219,7 +219,7 @@ struct HiDPISettingsTab: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                Button("Add \(staged.logicalWidth) × \(staged.logicalHeight) to the list") {
+                Button("Add \(staged.sizeLabel) to the list") {
                     guard !candidates.contains(where: { $0.id == staged.id }) else {
                         chosen.insert(staged.id)
                         return
@@ -335,7 +335,7 @@ struct HiDPISettingsTab: View {
             }
 
             if let match, let typedWidth, match.logicalWidth != typedWidth {
-                Text("Snapped to \(match.logicalWidth) × \(match.logicalHeight) — the nearest size that "
+                Text("Snapped to \(match.sizeLabel) — the nearest size that "
                     + "keeps the panel's \(ratioLabel) shape.")
                     .font(.caption2).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)

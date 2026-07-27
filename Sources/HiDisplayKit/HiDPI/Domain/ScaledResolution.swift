@@ -24,6 +24,14 @@ public struct ScaledResolution: Hashable, Codable, Sendable, Identifiable {
     public var pixelHeight: Int { logicalHeight * backingScale }
     public var isHiDPI: Bool { backingScale > 1 }
 
+    /// Just the logical size, e.g. `1744 × 1090`.
+    ///
+    /// Built as a `String` rather than interpolated into a SwiftUI `Text` at the call site: `Text`
+    /// treats its literal as a `LocalizedStringKey`, and an interpolated `Int` then goes through the
+    /// user's number format — which rendered 1744 as "1.744" on a Vietnamese system. A pixel count is
+    /// an identifier, not a quantity to group.
+    public var sizeLabel: String { "\(logicalWidth) × \(logicalHeight)" }
+
     public var label: String {
         isHiDPI
             ? "\(logicalWidth) × \(logicalHeight) HiDPI (\(pixelWidth) × \(pixelHeight))"

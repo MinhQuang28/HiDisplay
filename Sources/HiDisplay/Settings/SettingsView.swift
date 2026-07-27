@@ -81,7 +81,11 @@ struct DisplaysSettingsTab: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if let native = display.nativePixelSize {
-                LabeledContent("Native resolution") { Text("\(native.width) × \(native.height)") }
+                // `Text(verbatim:)`: an interpolated Int is number-formatted, which turns 5088 into
+                // "5.088" wherever the locale groups thousands with a period.
+                LabeledContent("Native resolution") {
+                    Text(verbatim: "\(native.width) × \(native.height)")
+                }
             }
             LabeledContent("Modes") {
                 Text("\(display.availableModes.count) total, \(display.hiDPIModeCount) HiDPI")
