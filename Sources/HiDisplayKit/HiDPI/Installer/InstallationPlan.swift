@@ -143,6 +143,7 @@ public struct OverrideInstaller {
         let existingData = fileManager.contents(atPath: target.path)
         var droppedKeys: [String] = []
         var mergedData = generated.data
+        var validation = generated.validation
         var carriedOver = 0
 
         if let existingData,
@@ -168,18 +169,35 @@ public struct OverrideInstaller {
                     .filter { seen.insert($0.id).inserted }
 
                 document.preservedEntries = existingDocument.preservedEntries
+                // Foreign top-level keys — a gamma table, a white point — ride along too. A "merge"
+                // that deleted them was a merge in name only.
+                document.preservedTopLevelEntries = existingDocument.preservedTopLevelEntries
                 // The app never emits an EDID patch itself, so one found here was put there
                 // deliberately by whoever wrote the file — which makes it exactly the kind of
                 // content this policy exists to carry through.
                 document.patchedEDID = existingDocument.patchedEDID
                 carriedOver = existingDocument.scaleResolutions.count
                     + existingDocument.preservedEntries.count
-                mergedData = OverrideGenerator.generate(document).data
+                // Validate what will actually be written, not just what the caller selected: the
+                // union can pass the resolution cap while the selection alone did — or vice versa —
+                // and the plan's gate has to see the file as it will land.
+                let regenerated = OverrideGenerator.generate(document)
+                mergedData = regenerated.data
+                validation = ValidationReport(
+                    issues: validation.issues
+                        + regenerated.validation.issues.filter { !validation.issues.contains($0) })
             case .replace:
                 // Caller asked for a clean slate. Report what is being discarded so the preview can
                 // say so out loud rather than quietly dropping 258 modes.
-                droppedKeys = unknownKeys + Self.discardedDescriptions(of: existingDocument)
+                droppedKeys = unknownKeys
+                    + existingDocument.preservedTopLevelEntries.keys.sorted()
+                    + Self.discardedDescriptions(of: existingDocument)
             }
+        }
+
+        // The size gate at the top only saw the caller's selection; a merge can grow past it.
+        guard mergedData.count <= Self.maximumOverrideBytes else {
+            throw InstallerError.fileTooLarge(bytes: mergedData.count, limit: Self.maximumOverrideBytes)
         }
 
         let finalHash = SHA256Hash.hex(of: mergedData)
@@ -213,12 +231,44 @@ public struct OverrideInstaller {
             root: root,
             actions: actions,
             manifest: manifest,
-            validation: generated.validation,
+            validation: validation,
             requiresLogout: true,
             recoveryCommand: Self.recoveryCommand(for: manifest),
             payload: mergedData,
             droppedUnknownKeys: droppedKeys,
             carriedOverEntryCount: carriedOver)
+    }
+
+    // MARK: - Backup staging
+
+    /// Copies every file the manifest says existed into `backupDirectory`, verifying each copy
+    /// against the manifest's `sha256Before` as it goes.
+    ///
+    /// The hash was recorded at *plan* time, and the user can sit on the confirmation for as long as
+    /// they like before anything is copied. If the file changed in between, the copy is not the file
+    /// the plan described — and every restore path verifies against `sha256Before`, so a recovery
+    /// package holding that copy would refuse its own backup exactly when it is needed. The planned
+    /// payload's merge is equally stale. So a mismatch here throws, and the caller re-plans against
+    /// the file as it is now.
+    public func stageBackups(for manifest: BackupManifest, into backupDirectory: URL) throws {
+        for entry in manifest.entries where entry.existedBefore {
+            let source = try resolveChecked(entry.relativePath)
+            let backup = backupDirectory.appendingPathComponent(entry.relativePath)
+            try fileManager.createDirectory(
+                at: backup.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if fileManager.fileExists(atPath: backup.path) {
+                try fileManager.removeItem(at: backup)
+            }
+            try fileManager.copyItem(at: source, to: backup)
+
+            guard let data = fileManager.contents(atPath: backup.path) else {
+                throw InstallerError.backupFailed(path: backup.path)
+            }
+            let hash = SHA256Hash.hex(of: data)
+            if let expected = entry.sha256Before, hash != expected {
+                throw InstallerError.manifestMismatch(expected: expected, got: hash)
+            }
+        }
     }
 
     // MARK: - Apply
@@ -316,8 +366,14 @@ public struct OverrideInstaller {
             let target = try resolveChecked(entry.relativePath)
 
             guard entry.existedBefore, let backupRelative = entry.backupRelativePath else {
-                // Nothing was there before, so restoring means removing what we added.
-                if fileManager.fileExists(atPath: target.path) {
+                // Nothing was there before, so restoring means removing what we added — but only if
+                // it still *is* what we added. The same ownership check `removeAppOwned` applies:
+                // deleting a file some other tool has since rewritten would be destroying their
+                // work, not undoing ours.
+                if let data = fileManager.contents(atPath: target.path) {
+                    guard SHA256Hash.hex(of: data) == entry.sha256After else {
+                        throw InstallerError.notAppOwned(path: target.path)
+                    }
                     try fileManager.removeItem(at: target)
                 }
                 continue

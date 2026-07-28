@@ -66,6 +66,39 @@ final class DisplayIdentityTests: XCTestCase {
         XCTAssertEqual(resolved[1].pairing, .ambiguous)
     }
 
+    /// A `.location` key has to survive a reboot: registry entry IDs are handed out per boot, so a
+    /// key built from one dissolved at every restart and both monitors silently lost their profiles.
+    /// The DCP unit token (`dispext0`…) names the *port*, which is boot-stable and is exactly what
+    /// the tier's own explanation promises the key means.
+    func testLocationKeysSurviveARebootWhenTheUnitTokenIsPresent() {
+        let displays = [
+            RawDisplayInfo(cgDisplayID: 1, vendorID: 0x10AC, productID: 0xD0A1, serialNumber: 0, unitNumber: 1),
+            RawDisplayInfo(cgDisplayID: 2, vendorID: 0x10AC, productID: 0xD0A1, serialNumber: 0, unitNumber: 2),
+        ]
+        // Same ports before and after the reboot; completely different entry IDs — and in the
+        // opposite order, which is exactly how a reboot shuffles them.
+        let beforeReboot = [
+            DisplayMetadata(vendorID: 0x10AC, productID: 0xD0A1, serialNumber: 0,
+                            registryEntryID: 0x4001, unitToken: "dispext0"),
+            DisplayMetadata(vendorID: 0x10AC, productID: 0xD0A1, serialNumber: 0,
+                            registryEntryID: 0x4002, unitToken: "dispext1"),
+        ]
+        let afterReboot = [
+            DisplayMetadata(vendorID: 0x10AC, productID: 0xD0A1, serialNumber: 0,
+                            registryEntryID: 0x9378, unitToken: "dispext0"),
+            DisplayMetadata(vendorID: 0x10AC, productID: 0xD0A1, serialNumber: 0,
+                            registryEntryID: 0x9231, unitToken: "dispext1"),
+        ]
+
+        let first = DisplayIdentityResolver.resolve(displays: displays, metadata: beforeReboot)
+        let second = DisplayIdentityResolver.resolve(displays: displays, metadata: afterReboot)
+
+        XCTAssertEqual(first[0].identity.stableKey, "v10ac-pd0a1-tdispext0")
+        XCTAssertEqual(first[1].identity.stableKey, "v10ac-pd0a1-tdispext1")
+        XCTAssertEqual(first.map(\.identity.stableKey), second.map(\.identity.stableKey),
+                       "the same monitor on the same port must keep its profile across a reboot")
+    }
+
     func testIdenticalDisplaysFallBackToUnitNumberWhenNoMetadata() {
         let displays = [
             RawDisplayInfo(cgDisplayID: 1, vendorID: 0x10AC, productID: 0xD0A1, serialNumber: 0, unitNumber: 7),

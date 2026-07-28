@@ -22,11 +22,11 @@ struct MenuContent: View {
             SettingsLink { Text("Settings…") }
                 .keyboardShortcut(",", modifiers: .command)
                 .simultaneousGesture(TapGesture().onEnded {
-                    NSApp.activate(ignoringOtherApps: true)
+                    NSApp.activateCompat()
                 })
         } else {
             Button("Settings…") {
-                NSApp.activate(ignoringOtherApps: true)
+                NSApp.activateCompat()
                 if NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) { return }
                 NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
             }

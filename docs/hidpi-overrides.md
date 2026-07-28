@@ -198,8 +198,10 @@ checksum before those bytes can be written.
 
 `OverrideValidator` blocks installation on: zero vendor or product ID, empty selection, duplicates,
 backing scale other than 1× or 2×, logical size below 640 × 480, backing dimension above 16384, a
-logical size larger than the panel's native pixels, more than 32 resolutions, and a malformed patched
-EDID.
+logical size larger than the panel's native pixels, more than 128 resolutions
+(`OverrideValidator.maximumResolutionCount` — raised from 32 after a real override with 89 modes was
+found working), and a malformed patched EDID. A merge is validated against the *union* it will
+write, not just the new selection.
 
 It warns but allows: aspect ratio mismatched with the panel, odd dimensions in a HiDPI mode, a backing
 store more than twice the panel's pixels (which can cost refresh rate), and any use of EDID injection.
@@ -209,10 +211,16 @@ told what is unusual about it first.
 
 ## Installing
 
-Milestone B ships the generator only. `HiDPISettingsTab` writes the override file plus a recovery
-package into `~/Downloads` and shows the three commands to install it. Nothing outside `~/Downloads` is
-written.
+Two routes, both in `HiDPISettingsTab`:
 
-`OverrideInstaller` — plan, apply with rollback, restore, remove-app-owned — is complete and tested
-against a temporary root, but is not yet wired to the real path because that needs a privileged helper
-registered via `SMAppService`, which needs a notarized build. See [security.md](security.md).
+* **Install** plans against the real `/Library/Displays` root, shows the full plan (destination,
+  what is replaced, what is carried over, the undo command), writes a recovery package into
+  `~/Downloads`, then performs the privileged copy through `PrivilegedInstaller` after one
+  authorization prompt. The privileged script re-verifies the payload's SHA-256 itself before moving
+  it into place, and the installed file is read back and verified afterwards.
+* **Export Only** writes the same file plus the recovery package into `~/Downloads` and shows the
+  commands to install it by hand. Nothing outside `~/Downloads` is written.
+
+`PrivilegedInstaller` currently uses `NSAppleScript`'s administrator prompt rather than a helper
+registered via `SMAppService` — the helper remains the intended end state once a notarized build
+exists. See [security.md](security.md).

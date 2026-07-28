@@ -78,7 +78,12 @@ public struct DisplayIdentityResolver {
             modelCounts[ModelKey(display), default: 0] += 1
         }
 
-        var pool = metadata.sorted { ($0.registryEntryID ?? 0) < ($1.registryEntryID ?? 0) }
+        // Token first: it is boot-stable, so the deterministic "lowest first" choice made for an
+        // ambiguous pairing lands on the same port after every reboot, instead of following
+        // whichever record happened to receive the lower per-boot entry ID this time.
+        var pool = metadata.sorted {
+            ($0.unitToken ?? "", $0.registryEntryID ?? 0) < ($1.unitToken ?? "", $1.registryEntryID ?? 0)
+        }
         var results: [ResolvedDisplay] = []
         /// Models where an indistinguishable choice has already been made.
         ///
@@ -100,8 +105,10 @@ public struct DisplayIdentityResolver {
             let serial = strongSerial(display: display, record: record)
             let edidHash = record?.edidHash
 
-            // A registry entry ID is the better location proxy; unit number is the fallback so that
-            // two identical serial-less monitors still differ even when metadata is unavailable.
+            // The unit token (`dispext0`…) names the port and survives reboots, so it is what a
+            // `.location` key is built from. The registry entry ID — unique only within one boot —
+            // is kept for diagnostics and as the key fallback, with the CG unit number below it so
+            // that two identical serial-less monitors still differ even with no metadata at all.
             let location = record?.registryEntryID ?? UInt64(display.unitNumber)
 
             let hasStrong = (serial != nil && serial != 0) || (edidHash?.isEmpty == false)
@@ -122,6 +129,7 @@ public struct DisplayIdentityResolver {
                 productID: display.productID != 0 ? display.productID : (record?.productID ?? 0),
                 serialNumber: serial,
                 registryLocation: location,
+                locationToken: record?.unitToken,
                 edidHash: edidHash,
                 keyTier: tier
             )

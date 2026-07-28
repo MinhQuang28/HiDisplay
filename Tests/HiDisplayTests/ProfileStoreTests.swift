@@ -100,6 +100,21 @@ final class ProfileStoreTests: XCTestCase {
             "the unreadable original must be kept for manual recovery")
     }
 
+    /// `copyItem` refuses to overwrite, so a second corruption used to silently keep the *old*
+    /// salvage while looking like it had preserved the new one.
+    func testASecondCorruptionReplacesTheSalvageCopy() async throws {
+        let salvage = fileURL.appendingPathExtension("corrupt")
+
+        try Data("{ first corruption".utf8).write(to: fileURL)
+        await ProfileStore(fileURL: fileURL).load()
+
+        try Data("{ second corruption".utf8).write(to: fileURL)
+        await ProfileStore(fileURL: fileURL).load()
+
+        XCTAssertEqual(try Data(contentsOf: salvage), Data("{ second corruption".utf8),
+                       "the salvage must hold the most recent unreadable file")
+    }
+
     func testRejectsAFileFromANewerSchema() throws {
         let future = """
         { "schemaVersion": 999, "profiles": {}, "hiDPIProfiles": {}, "userAssignments": {} }
@@ -267,6 +282,49 @@ final class RecoveryPackageTests: XCTestCase {
             } else {
                 XCTAssertTrue(script.contains("rmdir"), "an emptied vendor directory is removed non-recursively")
             }
+        }
+    }
+
+    /// The display name is the one script ingredient the monitor's hardware controls (via EDID), so a
+    /// hostile name must not be able to smuggle shell syntax into restore.command — which runs sudo.
+    func testHostileDisplayNameCannotReachTheRestoreScript() throws {
+        let hostileNames = [
+            "Evil\"; rm -r /tmp; echo \"Monitor",
+            "Evil$(touch /tmp/pwned)Monitor",
+            "Evil`touch /tmp/pwned`Monitor",
+            "Evil\\\"$(id)\\\"Monitor",
+            "Evil\nsudo rm /etc/hosts\n# Monitor",
+        ]
+        for (index, name) in hostileNames.enumerated() {
+            var hostile = manifest(existedBefore: true)
+            hostile.displayName = name
+            let package = try RecoveryPackageBuilder.create(
+                manifest: hostile, in: parent, timestamp: Date(timeIntervalSince1970: Double(index)))
+            let script = try String(contentsOf: package.restoreScript, encoding: .utf8)
+
+            // The name lands on exactly two lines. Whatever survives sanitizing must be inert there:
+            // no expansion, no quote-escape, no line break smuggled through.
+            let nameLines = script.components(separatedBy: "\n")
+                .filter { $0.contains("installed for:") || $0.contains("display :") }
+            XCTAssertEqual(nameLines.count, 2, "expected the name on two lines for '\(name)'")
+            for line in nameLines {
+                for character in ["$", "`", "\\"] {
+                    XCTAssertFalse(line.contains(character), "'\(character)' survived for '\(name)'")
+                }
+            }
+            // The echo line stays a single double-quoted string: exactly the two delimiting quotes.
+            let echoLine = try XCTUnwrap(nameLines.first { $0.contains("display :") })
+            XCTAssertEqual(echoLine.filter { $0 == "\"" }.count, 2, "quote survived for '\(name)'")
+            // Fragments of the injected text may survive as inert characters, but never as their own
+            // line — that would mean the newline itself got through.
+            XCTAssertFalse(script.contains("\nsudo rm /etc"), "injected line break survived for '\(name)'")
+            // bash -n parses without executing: the script must still be syntactically valid.
+            let bash = Process()
+            bash.executableURL = URL(fileURLWithPath: "/bin/bash")
+            bash.arguments = ["-n", package.restoreScript.path]
+            try bash.run()
+            bash.waitUntilExit()
+            XCTAssertEqual(bash.terminationStatus, 0, "script no longer parses for '\(name)'")
         }
     }
 

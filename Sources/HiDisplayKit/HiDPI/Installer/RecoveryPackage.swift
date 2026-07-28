@@ -122,6 +122,22 @@ public enum RecoveryPackageBuilder {
         """
     }
 
+    /// The display name, made safe to appear inside the generated bash script.
+    ///
+    /// The name comes from the monitor's EDID/IORegistry — hardware-controlled input, not ours. In a
+    /// double-quoted bash string a name containing `$(…)`, a backtick, `"` or `\\` would execute or
+    /// break quoting, and a newline would escape a comment line entirely. So only an allowlist gets
+    /// through: ASCII letters, digits, space, and `- _ . ( ) /`. The raw name still appears untouched
+    /// where it is data, not code: manifest.json and README.txt.
+    static func shellSafeDisplayName(_ name: String) -> String {
+        let allowed = CharacterSet.alphanumerics
+            .intersection(.init(charactersIn: Unicode.Scalar(0)..<Unicode.Scalar(128)))
+            .union(.init(charactersIn: " -_.()/"))
+        let cleaned = String(name.unicodeScalars.map { allowed.contains($0) ? Character($0) : "?" })
+            .trimmingCharacters(in: .whitespaces)
+        return cleaned.isEmpty ? "unknown display" : cleaned
+    }
+
     /// The restore script.
     ///
     /// Properties that matter: `set -euo pipefail`; every path is a quoted literal; the target is
@@ -132,11 +148,12 @@ public enum RecoveryPackageBuilder {
         let relativePath = entry?.relativePath ?? ""
         let expectedHash = entry?.sha256Before ?? ""
         let existed = entry?.existedBefore ?? false
+        let safeName = shellSafeDisplayName(manifest.displayName)
 
         return """
         #!/bin/bash
         # HiDisplay restore script — generated \(ISO8601DateFormatter().string(from: manifest.createdAt))
-        # Undoes the display override installed for: \(manifest.displayName)
+        # Undoes the display override installed for: \(safeName)
         #
         # Paths below are literals taken from manifest.json at generation time. This script never
         # builds a path from input, and never deletes a directory.
@@ -149,7 +166,11 @@ public enum RecoveryPackageBuilder {
         BACKUP="${HERE}/backup/${RELATIVE}"
         EXPECTED_SHA="\(expectedHash)"
 
-        # Refuse to act outside the override root, whatever the manifest says.
+        # Refuse to act outside the override root, whatever the manifest says. The `..` check makes
+        # the prefix check honest: without it, 'root/../anything' passes the first pattern.
+        case "$TARGET" in
+            *..*) echo "error: target '$TARGET' contains a traversal sequence" >&2; exit 1 ;;
+        esac
         case "$TARGET" in
             "${OVERRIDE_ROOT}/"*) : ;;
             *) echo "error: target '$TARGET' is outside '$OVERRIDE_ROOT'" >&2; exit 1 ;;
@@ -159,7 +180,7 @@ public enum RecoveryPackageBuilder {
         esac
 
         echo "HiDisplay restore"
-        echo "  display : \(manifest.displayName)"
+        echo "  display : \(safeName)"
         echo "  target  : $TARGET"
         echo
 

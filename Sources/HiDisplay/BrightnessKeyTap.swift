@@ -82,6 +82,10 @@ final class BrightnessKeyTap {
         if let runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         }
+        // Invalidate explicitly rather than leaving the port to ARC teardown: the callback holds an
+        // unretained pointer to `self`, and a port that outlives its removal window is exactly the
+        // kind of thing that turns into a use-after-free during shutdown.
+        CFMachPortInvalidate(tap)
         self.tap = nil
         runLoopSource = nil
         Log.app.notice("brightness key tap stopped")
@@ -89,9 +93,13 @@ final class BrightnessKeyTap {
 
     /// The system disables a tap that takes too long to respond. Re-enabling is the documented recovery,
     /// and without it the keys silently stop working until the app restarts.
-    fileprivate func reenableAfterTimeout() {
+    fileprivate func reenable(after eventType: CGEventType) {
         guard let tap else { return }
-        Log.app.notice("brightness key tap was disabled by timeout; re-enabling")
+        // The two disable reasons look identical from outside but mean different things in a support
+        // log: a timeout is this app being slow, user-input disabling accompanies permission and
+        // secure-input changes.
+        let reason = eventType == .tapDisabledByTimeout ? "timeout" : "user input (permission or secure-input change)"
+        Log.app.notice("brightness key tap was disabled by \(reason, privacy: .public); re-enabling")
         CGEvent.tapEnable(tap: tap, enable: true)
     }
 
@@ -133,7 +141,7 @@ private let brightnessTapCallback: CGEventTapCallBack = { _, type, event, userIn
     let tap = Unmanaged<BrightnessKeyTap>.fromOpaque(userInfo).takeUnretainedValue()
 
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        MainActor.assumeIsolated { tap.reenableAfterTimeout() }
+        MainActor.assumeIsolated { tap.reenable(after: type) }
         return Unmanaged.passUnretained(event)
     }
 

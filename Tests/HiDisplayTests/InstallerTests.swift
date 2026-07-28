@@ -92,6 +92,52 @@ final class InstallerTests: XCTestCase {
         }
     }
 
+    // MARK: - Backup staging
+
+    func testStageBackupsCopiesTheExistingFile() throws {
+        let generated = makeGenerated()
+        let target = root.appendingPathComponent(generated.relativePath)
+        try FileManager.default.createDirectory(
+            at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let original = Data("original contents".utf8)
+        try original.write(to: target)
+
+        let plan = try makeInstaller().plan(generated: generated, display: makeDisplay())
+        try makeInstaller().stageBackups(for: plan.manifest, into: backups)
+
+        let staged = try Data(contentsOf: backups.appendingPathComponent(generated.relativePath))
+        XCTAssertEqual(staged, original)
+    }
+
+    /// The user can sit on the confirmation alert indefinitely between plan and backup. A file that
+    /// changed in that window must fail staging — otherwise the recovery package ships a backup that
+    /// its own restore script (which verifies `sha256Before`) will refuse.
+    func testStageBackupsRefusesAFileThatChangedSincePlanning() throws {
+        let generated = makeGenerated()
+        let target = root.appendingPathComponent(generated.relativePath)
+        try FileManager.default.createDirectory(
+            at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("planned against this".utf8).write(to: target)
+
+        let plan = try makeInstaller().plan(generated: generated, display: makeDisplay())
+        try Data("changed while the alert was up".utf8).write(to: target)
+
+        XCTAssertThrowsError(
+            try makeInstaller().stageBackups(for: plan.manifest, into: backups)
+        ) { error in
+            guard case .manifestMismatch = error as? InstallerError else {
+                return XCTFail("expected manifestMismatch, got \(error)")
+            }
+        }
+    }
+
+    func testStageBackupsDoesNothingForAFreshInstall() throws {
+        let plan = try makeInstaller().plan(generated: makeGenerated(), display: makeDisplay())
+        try makeInstaller().stageBackups(for: plan.manifest, into: backups)
+        let contents = try FileManager.default.contentsOfDirectory(atPath: backups.path)
+        XCTAssertTrue(contents.isEmpty, "no file existed, so nothing must be staged")
+    }
+
     // MARK: - Apply
 
     func testApplyWritesTheFileAndReturnsTheManifest() throws {
@@ -199,6 +245,27 @@ final class InstallerTests: XCTestCase {
         try installer.restore(manifest: manifest, backupDirectory: backups)
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: root.appendingPathComponent(generated.relativePath).path))
+    }
+
+    /// Undo must not delete what it did not write: a file rewritten by another tool since our
+    /// install is their work now, and restore refuses it the same way `removeAppOwned` does.
+    func testRestoreRefusesToRemoveAFileAnotherToolRewrote() throws {
+        let installer = makeInstaller()
+        let generated = makeGenerated()
+        let plan = try installer.plan(generated: generated, display: makeDisplay())
+        let manifest = try installer.apply(
+            plan, payload: [generated.relativePath: generated.data], backupDirectory: backups)
+
+        let target = root.appendingPathComponent(generated.relativePath)
+        try Data("another tool's contents".utf8).write(to: target)
+
+        XCTAssertThrowsError(try installer.restore(manifest: manifest, backupDirectory: backups)) { error in
+            guard case .notAppOwned = error as? InstallerError else {
+                return XCTFail("expected notAppOwned, got \(error)")
+            }
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.path),
+                      "the other tool's file must survive the refused restore")
     }
 
     func testRestoreRefusesACorruptedBackup() throws {
@@ -427,6 +494,92 @@ final class ExistingContentPolicyTests: XCTestCase {
         }
         XCTAssertTrue(ids.contains(ScaledResolution(logicalWidth: 1920, logicalHeight: 1080).id),
                       "the newly selected size must be there too")
+    }
+
+    /// Seeds the target with an override holding top-level keys this app does not understand.
+    private func seedOverrideWithForeignTopLevelKeys(relativePath: String) throws {
+        let plist: [String: Any] = [
+            "DisplayVendorID": 0x10AC,
+            "DisplayProductID": 0xD0A1,
+            "DisplayGammaTable": Data([0x01, 0x02, 0x03]),
+            "DisplayWhitePointX": 0.3127,
+        ]
+        let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        let target = root.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: target)
+    }
+
+    /// "Merge" has to mean the whole file, not just the entries this app understands — a merge that
+    /// deletes a gamma table is a replace wearing a merge's name.
+    func testMergeCarriesForeignTopLevelKeys() throws {
+        let generated = makeGenerated()
+        try seedOverrideWithForeignTopLevelKeys(relativePath: generated.relativePath)
+
+        let installer = OverrideInstaller(root: root, appVersion: "test")
+        let plan = try installer.plan(generated: generated, display: makeDisplay(), policy: .merge)
+
+        XCTAssertTrue(plan.droppedUnknownKeys.isEmpty, "a merge that carries everything drops nothing")
+        let payload = try PropertyListSerialization.propertyList(
+            from: plan.payload, options: [], format: nil) as? [String: Any]
+        XCTAssertEqual(payload?["DisplayGammaTable"] as? Data, Data([0x01, 0x02, 0x03]))
+        XCTAssertEqual(payload?["DisplayWhitePointX"] as? Double, 0.3127)
+        XCTAssertNotNil(payload?["scale-resolutions"] as? [Data], "the selection still lands too")
+    }
+
+    func testReplaceStillReportsForeignTopLevelKeysAsDropped() throws {
+        let generated = makeGenerated()
+        try seedOverrideWithForeignTopLevelKeys(relativePath: generated.relativePath)
+
+        let installer = OverrideInstaller(root: root, appVersion: "test")
+        let plan = try installer.plan(generated: generated, display: makeDisplay(), policy: .replace)
+
+        XCTAssertTrue(plan.droppedUnknownKeys.contains("DisplayGammaTable"))
+        XCTAssertTrue(plan.droppedUnknownKeys.contains("DisplayWhitePointX"))
+        let payload = try PropertyListSerialization.propertyList(
+            from: plan.payload, options: [], format: nil) as? [String: Any]
+        XCTAssertNil(payload?["DisplayGammaTable"], "replace means what it says")
+    }
+
+    /// The resolution cap has to gate the *union*, not the selection: one new size over a full file
+    /// breaches it just as surely as 129 new sizes over an empty one.
+    func testAMergeThatBreachesTheResolutionCapIsNotInstallable() throws {
+        let generated = makeGenerated()
+        XCTAssertTrue(generated.validation.isInstallable, "the selection alone must be fine")
+        _ = try seedNativeShapedOverride(
+            relativePath: generated.relativePath, count: OverrideValidator.maximumResolutionCount)
+
+        let installer = OverrideInstaller(root: root, appVersion: "test")
+        let plan = try installer.plan(generated: generated, display: makeDisplay(), policy: .merge)
+
+        XCTAssertFalse(plan.isInstallable, "the merged file breaches the cap even though the selection did not")
+        XCTAssertTrue(plan.validation.errors.contains { $0.message.contains("limit") })
+    }
+
+    /// Same for the byte limit: a small selection merged over a huge existing file must be refused,
+    /// not waved through because the selection alone was under the limit.
+    func testAMergeThatGrowsPastTheSizeLimitIsRefused() throws {
+        let generated = makeGenerated()
+        let plist: [String: Any] = [
+            "DisplayVendorID": 0x10AC,
+            "DisplayProductID": 0xD0A1,
+            "IODisplayEDID": Data(repeating: 0, count: OverrideInstaller.maximumOverrideBytes),
+        ]
+        let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        let target = root.appendingPathComponent(generated.relativePath)
+        try FileManager.default.createDirectory(
+            at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: target)
+
+        let installer = OverrideInstaller(root: root, appVersion: "test")
+        XCTAssertThrowsError(
+            try installer.plan(generated: generated, display: makeDisplay(), policy: .merge)
+        ) { error in
+            guard case .fileTooLarge = error as? InstallerError else {
+                return XCTFail("expected fileTooLarge, got \(error)")
+            }
+        }
     }
 
     /// No existing file means nothing to carry over, and the confirmation must not claim otherwise.

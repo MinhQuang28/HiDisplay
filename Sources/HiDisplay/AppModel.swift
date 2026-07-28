@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import HiDisplayKit
@@ -89,6 +90,23 @@ final class AppModel: ObservableObject {
         keyTap.onBrightnessKey = { [weak self] delta, allDisplays in
             self?.handleBrightnessKey(delta: delta, forceAllDisplays: allDisplays) ?? false
         }
+
+        // A monitor sleep/wake cycle can replace a display's IOAVService without any display
+        // reconfiguration event — the display never "disconnects", so discovery stays quiet while
+        // the DDC session underneath is dead. Worse, if a probe ran while the monitor slept, the
+        // display downgraded to software dimming, and nothing on that path ever re-probes. Screens
+        // waking is the moment to re-check what every external display can actually do.
+        NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.screensDidWakeNotification)
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    for display in self.displays where !display.isBuiltIn {
+                        await self.brightness.probeAndChoose(display: display)
+                    }
+                }
+            }
+            .store(in: &cancellables)
     }
 
     func start() async {
@@ -129,7 +147,17 @@ final class AppModel: ObservableObject {
         permissionTimer?.invalidate()
         discovery.stop()
         brightness.prepareForQuit()
-        Task { await profiles.flush() }
+        // `applicationWillTerminate` is synchronous and the process exits the moment it returns, so
+        // a fire-and-forget Task here almost never ran — any change still inside the save debounce
+        // was lost on quit. Block for the flush instead, bounded so a wedged disk cannot hang
+        // quitting. Detached on purpose: a plain Task would inherit the main actor this method
+        // blocks, which is a deadlock.
+        let flushed = DispatchSemaphore(value: 0)
+        Task.detached { [profiles] in
+            await profiles.flush()
+            flushed.signal()
+        }
+        _ = flushed.wait(timeout: .now() + 2)
     }
 
     private func handleSettled(_ displays: [DisplayDevice]) async {
@@ -307,11 +335,12 @@ final class AppModel: ObservableObject {
         case failed(String)
     }
 
-    /// The policy the app installs with: the UI's selection is the complete intended contents, so
-    /// merging would silently retain modes the user just deselected. The cost is that anything already
-    /// in the file is discarded — which is why `plan.droppedUnknownKeys` has to reach the user before
-    /// the password prompt, not just exist.
-    private static let installPolicy = OverrideInstaller.ExistingContentPolicy.replace
+    /// The policy the app installs with. Merge, because that is what the UI promises: the tab is
+    /// titled "Resolutions to add", and the confirmation says existing entries are kept. `.replace`
+    /// here would make both of those false — it briefly did, and destroyed a 242-entry override
+    /// written by another tool. Removing modes is a different feature (the recovery package), not a
+    /// side effect of adding some. Export uses the same policy so both routes stage the same file.
+    static let installPolicy = OverrideInstaller.ExistingContentPolicy.merge
 
     /// Works out what installing would change, writing nothing.
     ///
@@ -344,13 +373,19 @@ final class AppModel: ObservableObject {
                 for: .downloadsDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             let package = try RecoveryPackageBuilder.create(manifest: plan.manifest, in: downloads)
 
-            // Copy the file being replaced into the package while we can still read it.
-            for entry in plan.manifest.entries where entry.existedBefore {
-                let source = URL(fileURLWithPath: "\(OverridePaths.systemOverrideRoot)/\(entry.relativePath)")
-                let backup = package.backupDirectory.appendingPathComponent(entry.relativePath)
-                try FileManager.default.createDirectory(
-                    at: backup.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try FileManager.default.copyItem(at: source, to: backup)
+            // Copy the file being replaced into the package while we can still read it. This throws
+            // if the file no longer matches the plan — the plan (and its merged payload) is then
+            // stale, and installing it would both lose the newer content and produce a recovery
+            // package whose own restore script rejects the backup.
+            let installer = OverrideInstaller(root: plan.root, appVersion: Self.version)
+            do {
+                try installer.stageBackups(for: plan.manifest, into: package.backupDirectory)
+            } catch InstallerError.manifestMismatch {
+                try? FileManager.default.removeItem(at: package.directory)
+                return .failed("""
+                    The override file changed after this install was planned. Nothing was written. \
+                    Click Install again to re-read the file and see an updated plan.
+                    """)
             }
 
             do {
@@ -369,10 +404,13 @@ final class AppModel: ObservableObject {
     }
 
     /// Ends the session so the new override takes effect. Profiles are flushed first — a logout gives
-    /// the app no more warning than a restart does.
+    /// the app no more warning than a restart does — and *awaited*: firing the logout Apple event in
+    /// the same breath as an unawaited flush was a race the flush usually lost.
     func endSession(_ kind: PrivilegedInstaller.SessionEnd) {
-        Task { await profiles.flush() }
-        do { try PrivilegedInstaller.endSession(kind) } catch { lastError = error.localizedDescription }
+        Task {
+            await profiles.flush()
+            do { try PrivilegedInstaller.endSession(kind) } catch { lastError = error.localizedDescription }
+        }
     }
 
     // MARK: - Diagnostics

@@ -5,9 +5,13 @@ import Foundation
 ///
 /// Three properties this guarantees, all of which are requirements rather than optimisations:
 ///
-/// * **No concurrent I2C to one display.** An actor plus a single drain loop means exactly one frame
-///   is on the wire at a time. Overlapping writes are how monitors get wedged until they are power
-///   cycled.
+/// * **No concurrent I2C to one display.** Actor isolation alone does not give this: every `await`
+///   on the transport is a suspension point, so a drain loop and a read transaction can interleave
+///   frames mid-transaction — an actor only prevents overlapping *synchronous* sections. So the
+///   wire is guarded by an explicit bus token (`acquireBus`/`releaseBus`): a write holds it from
+///   the frame going out until its spacing interval has passed, and a read holds it across the
+///   whole request → reply-delay → reply transaction. Overlapping frames are how monitors get
+///   wedged until they are power cycled.
 /// * **Bounded write rate.** `writeInterval` spacing keeps a fast drag from flooding the bus.
 /// * **The final value always lands.** The drain loop re-checks for a newer pending value *after*
 ///   each write completes, so the last position of the slider is always the last frame sent — the
@@ -34,6 +38,11 @@ public actor DDCCommandQueue {
     private var pendingValue: UInt16?
     private var isDraining = false
     private var invalidated = false
+
+    /// Whether some transaction currently owns the wire. See the bus token note in the type comment.
+    private var busBusy = false
+    /// Transactions waiting for the wire, resumed in arrival order.
+    private var busWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// Which wire shape this display answers, learned from its replies. See `DDC.FrameShape`.
     ///
@@ -85,11 +94,35 @@ public actor DDCCommandQueue {
         Task { await drain() }
     }
 
+    // MARK: - The bus token
+
+    /// Waits until no other transaction is on the wire, then takes it.
+    ///
+    /// Plain FIFO: a released bus is handed directly to the oldest waiter, which wakes already
+    /// holding it — `busBusy` never flickers false while someone is queued, so arrival order is
+    /// service order.
+    private func acquireBus() async {
+        if !busBusy {
+            busBusy = true
+            return
+        }
+        await withCheckedContinuation { busWaiters.append($0) }
+    }
+
+    private func releaseBus() {
+        if busWaiters.isEmpty {
+            busBusy = false
+        } else {
+            busWaiters.removeFirst().resume()
+        }
+    }
+
     /// Sends every pending value in order, spaced by `writeInterval`, until nothing new arrives.
     private func drain() async {
         defer { isDraining = false }
         while !invalidated, let value = pendingValue {
             pendingValue = nil
+            await acquireBus()
             do {
                 try await transport.write(
                     VCPCodec.setRequest(code: .brightness, value: value, shape: frameShape))
@@ -98,10 +131,18 @@ public actor DDCCommandQueue {
                 // Do not retry writes. A brightness write is idempotent and superseded a moment later
                 // by the next slider position, so retrying only adds bus traffic during a drag.
             }
-            // Spacing goes after the write, so a single isolated change is not delayed.
+            // Spacing goes after the write, so a single isolated change is not delayed. It happens
+            // *while still holding the bus*: the interval separates this frame from whatever goes
+            // out next, and that next frame may be a read transaction waiting on the token, not
+            // just this loop's own next write.
+            //
+            // `||` rather than `&&` is deliberate and load-bearing: the sleep must also run when
+            // this looks like the last write, because a new drain can start the moment this one
+            // exits and its first frame still needs the full spacing from ours.
             if pendingValue != nil || !invalidated {
                 try? await Task.sleep(for: writeInterval)
             }
+            releaseBus()
         }
     }
 
@@ -160,6 +201,13 @@ public actor DDCCommandQueue {
     private func read(
         shape: DDC.FrameShape, tolerateChecksumMismatch: Bool
     ) async throws -> VCPCodec.Reply {
+        // The whole request → delay → reply sequence owns the wire. Without this, a drain loop
+        // started mid-transaction slips a Set frame into the reply-delay window, and the monitor
+        // answers whichever frame it noticed last — or wedges.
+        await acquireBus()
+        defer { releaseBus() }
+        guard !invalidated else { throw DDCError.disconnected }
+
         try await transport.write(VCPCodec.getRequest(code: .brightness, shape: shape))
         try await Task.sleep(for: DDC.replyDelay)
 

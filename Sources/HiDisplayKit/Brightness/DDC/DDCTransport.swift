@@ -78,13 +78,20 @@ public final class FakeDDCTransport: DDCTransport, @unchecked Sendable {
     /// Frames to return from `read`, consumed in order. When exhausted the last one repeats, so a
     /// test can set one reply and poll freely.
     public var replies: [[UInt8]]
-    /// Every frame successfully handed to `write`, in order. The assertion target for coalescing tests.
-    public private(set) var recordedWrites: [[UInt8]] = []
+    /// Every frame successfully handed to `write`, in order. The assertion target for coalescing
+    /// tests. Read under the same lock the drain task writes under — tests poll this concurrently.
+    public var recordedWrites: [[UInt8]] { lock.withLock { storedWrites } }
+    /// When each successful write *started*, so a test can measure the spacing between frames
+    /// instead of trusting that a sleep somewhere provides it.
+    public var writeInstants: [ContinuousClock.Instant] { lock.withLock { storedWriteInstants } }
     /// Every `write` call, including ones that threw. Counted separately because a retry test needs to
     /// know how many attempts were made, which `recordedWrites` cannot show when writes fail.
-    public private(set) var writeAttempts = 0
+    public var writeAttempts: Int { lock.withLock { storedWriteAttempts } }
     public var errorToThrow: DDCError?
 
+    private var storedWrites: [[UInt8]] = []
+    private var storedWriteInstants: [ContinuousClock.Instant] = []
+    private var storedWriteAttempts = 0
     private var replyIndex = 0
     private let lock = NSLock()
 
@@ -99,10 +106,14 @@ public final class FakeDDCTransport: DDCTransport, @unchecked Sendable {
     }
 
     public func write(_ bytes: [UInt8]) async throws {
-        lock.withLock { writeAttempts += 1 }
+        let started = ContinuousClock.now
+        lock.withLock { storedWriteAttempts += 1 }
         if let errorToThrow { throw errorToThrow }
         if latency > .zero { try await Task.sleep(for: latency) }
-        lock.withLock { recordedWrites.append(bytes) }
+        lock.withLock {
+            storedWrites.append(bytes)
+            storedWriteInstants.append(started)
+        }
     }
 
     public func read(length: Int) async throws -> [UInt8] {
@@ -119,7 +130,7 @@ public final class FakeDDCTransport: DDCTransport, @unchecked Sendable {
     /// Values decoded out of the recorded `Set VCP Feature` frames, for assertions.
     public var recordedBrightnessValues: [UInt16] {
         lock.withLock {
-            recordedWrites.compactMap { frame in
+            storedWrites.compactMap { frame in
                 // Shape-agnostic: the leading host-address byte is present or absent depending on
                 // `DDC.FrameShape`. Unambiguous to detect — a length byte is always 0x80 | n, so a
                 // first byte below 0x80 can only be the host address. The opcode follows the length.
@@ -135,8 +146,9 @@ public final class FakeDDCTransport: DDCTransport, @unchecked Sendable {
 
     public func reset() {
         lock.withLock {
-            recordedWrites.removeAll()
-            writeAttempts = 0
+            storedWrites.removeAll()
+            storedWriteInstants.removeAll()
+            storedWriteAttempts = 0
             replyIndex = 0
         }
     }

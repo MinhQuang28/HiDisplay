@@ -52,9 +52,10 @@ public enum DDC {
     public static let replyChecksumSeed: UInt8 = 0x50
     /// MCCS asks for ~40 ms between a request and its reply. Some panels need more; this is the floor.
     public static let replyDelay: Duration = .milliseconds(50)
-    /// Minimum spacing between consecutive writes. 40 ms ≈ 25 writes/s, inside the 10–20/s target
-    /// with headroom, and slow enough that dragging a slider does not wedge the monitor's bus.
-    public static let writeInterval: Duration = .milliseconds(40)
+    /// Minimum spacing between consecutive host frames. DDC/CI 1.1 asks for at least 50 ms between
+    /// commands; this was 40 ms — fine for every panel on the test bench, but below the spec's
+    /// floor, and the coalescing already makes write throughput a non-issue.
+    public static let writeInterval: Duration = .milliseconds(50)
 }
 
 /// Encoding and decoding of DDC/CI frames.

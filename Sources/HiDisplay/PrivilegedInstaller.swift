@@ -14,14 +14,18 @@ import HiDisplayKit
 /// The project's own security rules say never to build a privileged command out of user input. That
 /// rule is kept literally here:
 ///
-/// * The only variable parts of the command are two paths.
+/// * The only variable parts of the command are paths and a SHA-256 hex digest.
 /// * The destination is derived from the display's vendor and product IDs — `UInt32` values formatted
 ///   as hex, so they *cannot* contain a shell metacharacter.
 /// * The source is a file this app wrote to its own temporary directory under a generated UUID.
-/// * Both paths are re-validated against a strict character allowlist before the command is built,
+/// * Every path is re-validated against a strict character allowlist before the command is built,
 ///   and the destination is proved to resolve inside the override root. Anything else refuses.
-/// * The command is three fixed operations — `mkdir -p`, `cp`, `chmod` — with no shell expansion, no
-///   `rm`, and no recursion.
+///   (`PrivilegedInstallScript` holds that logic, in the kit, where it is tested.)
+/// * The staged file sits in a user-writable directory, so the *privileged script* verifies it: it
+///   copies into the root-owned override tree, checks the copy's SHA-256 against the hash the user
+///   approved, and only then moves it into place. A same-user process swapping the staged file
+///   between our checks and the root copy achieves nothing — the swap is caught as root, before
+///   anything lands at the destination path.
 /// * The result is verified afterwards by reading the file back (unprivileged) and comparing SHA-256
 ///   against the plan. A privileged write that is not verified is a privileged write you do not know
 ///   the outcome of.
@@ -44,9 +48,10 @@ enum PrivilegedInstaller {
             case .authorizationFailed(let message):
                 return message
             case .verificationFailed(let expected, let got):
-                return "The installed file does not match what was previewed "
-                    + "(expected \(expected.prefix(12))…, got \(got.prefix(12))…). Nothing was trusted; "
-                    + "check the recovery package before restarting."
+                return "The file now installed does not match what was previewed "
+                    + "(expected \(expected.prefix(12))…, got \(got.prefix(12))…) — something modified "
+                    + "it immediately after installation. Do not log out yet: run restore.command from "
+                    + "the recovery package in Downloads to put the previous file back."
             case .payloadMismatch(let expected, let got):
                 return "Refusing to install: the file to write does not match the one you were shown "
                     + "(expected \(expected.prefix(12))…, got \(got.prefix(12))…). Nothing was changed."
@@ -54,21 +59,6 @@ enum PrivilegedInstaller {
                 return "Authorization was cancelled."
             }
         }
-    }
-
-    /// Characters a path may contain before it is allowed anywhere near a shell command.
-    ///
-    /// Deliberately narrow. Every legitimate path here is made of hex digits, ASCII letters, and the
-    /// separators below — a space or a quote means something has gone wrong upstream, and the right
-    /// response is to refuse rather than to escape harder.
-    private static let allowedPathCharacters = CharacterSet(
-        charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/-._")
-
-    private static func requireSafe(_ path: String) throws {
-        guard !path.isEmpty,
-              path.unicodeScalars.allSatisfy({ allowedPathCharacters.contains($0) }),
-              !path.contains("..")
-        else { throw InstallError.unsafePath(path) }
     }
 
     /// Writes `payload` to the override root, prompting for authorization once.
@@ -93,22 +83,26 @@ enum PrivilegedInstaller {
             relativePath: action.relativePath, under: plan.root)
         let vendorDirectory = destination.deletingLastPathComponent()
 
-        // Stage in our own temporary directory; the privileged step only copies.
+        // Stage in our own temporary directory. Mode 600 keeps other *users* out; a process running
+        // as this user can still swap the file, which is why the privileged script re-verifies the
+        // hash itself rather than trusting these bytes.
         let staging = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("hidisplay-install-\(UUID().uuidString)")
         try payload.write(to: staging, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: staging.path)
         defer { try? FileManager.default.removeItem(at: staging) }
 
-        try requireSafe(staging.path)
-        try requireSafe(destination.path)
-        try requireSafe(vendorDirectory.path)
-
-        // Three fixed operations. No expansion, no removal, no recursion.
-        let script = """
-            mkdir -p '\(vendorDirectory.path)' && \
-            cp '\(staging.path)' '\(destination.path)' && \
-            chmod 644 '\(destination.path)'
-            """
+        let script: String
+        do {
+            script = try PrivilegedInstallScript.install(
+                staging: staging.path,
+                vendorDirectory: vendorDirectory.path,
+                destination: destination.path,
+                sha256: hash)
+        } catch PrivilegedInstallScript.ScriptError.unsafePath(let path) {
+            throw InstallError.unsafePath(path)
+        }
 
         Log.hidpiInstaller.notice("requesting authorization to install override")
         try runWithAdministratorPrivileges(script)

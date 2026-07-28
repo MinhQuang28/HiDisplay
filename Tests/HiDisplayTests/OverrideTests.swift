@@ -91,13 +91,29 @@ final class OverrideGeneratorTests: XCTestCase {
         XCTAssertTrue(reparsed.scaleResolutions.contains { $0.id == "3840x2160@1x" })
     }
 
-    func testUnknownTopLevelKeysAreReported() throws {
+    /// Unknown top-level keys used to be merely *reported* as about-to-be-dropped; now they are
+    /// captured and survive regeneration, so a merge genuinely preserves the whole file.
+    func testUnknownTopLevelKeysAreCapturedAndSurviveRegeneration() throws {
         let url = try Fixtures.overrideURL(named: "apple-610-9cc3.plist")
-        let (_, unknownKeys) = try OverrideGenerator.parseExisting(try Data(contentsOf: url))
-        // This file carries gamma and colour-point keys the app knows nothing about. Reporting them
-        // lets the install preview warn that regenerating would drop them.
-        XCTAssertTrue(unknownKeys.contains("DisplayGammaTable"))
-        XCTAssertTrue(unknownKeys.contains("DisplayWhitePointX"))
+        let original = try Data(contentsOf: url)
+        let (parsed, unknownKeys) = try OverrideGenerator.parseExisting(original)
+
+        // This file carries gamma and colour-point keys the app knows nothing about. They land in
+        // the carried-through set, and `unknownKeys` — the genuinely droppable remainder — is empty.
+        XCTAssertNotNil(parsed.preservedTopLevelEntries["DisplayGammaTable"])
+        XCTAssertNotNil(parsed.preservedTopLevelEntries["DisplayWhitePointX"])
+        XCTAssertTrue(unknownKeys.isEmpty, "every key in this fixture is preservable")
+
+        // And they must survive a regenerate byte-for-byte in value.
+        let originalPlist = try PropertyListSerialization.propertyList(
+            from: original, options: [], format: nil) as? [String: Any]
+        let regeneratedPlist = try PropertyListSerialization.propertyList(
+            from: OverrideGenerator.generate(parsed).data, options: [], format: nil) as? [String: Any]
+        for key in ["DisplayGammaTable", "DisplayWhitePointX"] {
+            XCTAssertNotNil(originalPlist?[key], "fixture no longer carries \(key)")
+            XCTAssertEqual(regeneratedPlist?[key] as? NSObject, originalPlist?[key] as? NSObject,
+                           "\(key) changed across a regenerate")
+        }
     }
 
     func testRejectsNonDictionaryPlist() {
@@ -547,5 +563,92 @@ final class PrivilegedPathSafetyTests: XCTestCase {
         XCTAssertThrowsError(try OverridePaths.resolve(
             relativePath: OverridePaths.relativePath(vendorID: 0x610, productID: 0xa059),
             under: URL(fileURLWithPath: OverridePaths.forbiddenOverrideRoot)))
+    }
+}
+
+/// The shell string run as root, exercised for real — with bash, in a temporary directory.
+///
+/// The property that matters: the script itself verifies the staged file's hash after copying it,
+/// so swapping the staged file between the app's checks and the privileged copy installs nothing.
+final class PrivilegedInstallScriptTests: XCTestCase {
+
+    private var base: URL!
+
+    override func setUpWithError() throws {
+        // /tmp rather than NSTemporaryDirectory(): every character of these paths ends up inside a
+        // shell command, and the per-user temp path is not guaranteed to satisfy the allowlist.
+        base = URL(fileURLWithPath: "/tmp/hidisplay-script-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: base)
+    }
+
+    private func makeScript(payload: Data, stagedAs staged: Data? = nil) throws
+        -> (script: String, destination: URL)
+    {
+        let staging = base.appendingPathComponent("staging")
+        try (staged ?? payload).write(to: staging)
+        let vendor = base.appendingPathComponent("root/DisplayVendorID-10ac")
+        let destination = vendor.appendingPathComponent("DisplayProductID-d0a1")
+        let script = try PrivilegedInstallScript.install(
+            staging: staging.path, vendorDirectory: vendor.path,
+            destination: destination.path, sha256: SHA256Hash.hex(of: payload))
+        return (script, destination)
+    }
+
+    @discardableResult
+    private func runBash(_ script: String) throws -> Int32 {
+        let bash = Process()
+        bash.executableURL = URL(fileURLWithPath: "/bin/bash")
+        bash.arguments = ["-c", script]
+        bash.standardError = FileHandle.nullDevice
+        try bash.run()
+        bash.waitUntilExit()
+        return bash.terminationStatus
+    }
+
+    func testRefusesUnsafePathsAndMalformedDigests() {
+        let goodHash = String(repeating: "ab", count: 32)
+        for bad in ["/tmp/a b", "/tmp/a'b", "/tmp/a$(b)", "/tmp/../etc", ""] {
+            XCTAssertThrowsError(try PrivilegedInstallScript.install(
+                staging: bad, vendorDirectory: "/tmp/v", destination: "/tmp/v/d", sha256: goodHash),
+                "accepted unsafe path '\(bad)'")
+        }
+        for badHash in ["abc", String(repeating: "zz", count: 32), goodHash + "'; rm x;'"] {
+            XCTAssertThrowsError(try PrivilegedInstallScript.install(
+                staging: "/tmp/s", vendorDirectory: "/tmp/v", destination: "/tmp/v/d", sha256: badHash),
+                "accepted malformed digest '\(badHash)'")
+        }
+    }
+
+    func testScriptVerifiesBeforeMovingIntoPlace() throws {
+        let (script, _) = try makeScript(payload: Data("payload".utf8))
+        XCTAssertFalse(script.contains("\n"), "AppleScript string literals cannot hold a raw newline")
+        XCTAssertFalse(script.contains("\""), "a double quote would fight the AppleScript wrapper")
+        let verify = try XCTUnwrap(script.range(of: "shasum"))
+        let move = try XCTUnwrap(script.range(of: "mv "))
+        XCTAssertLessThan(verify.lowerBound, move.lowerBound, "the copy must be verified before the move")
+    }
+
+    func testScriptInstallsAMatchingStagedFile() throws {
+        let payload = Data("the approved bytes".utf8)
+        let (script, destination) = try makeScript(payload: payload)
+
+        XCTAssertEqual(try runBash(script), 0)
+        XCTAssertEqual(try Data(contentsOf: destination), payload)
+    }
+
+    func testScriptRefusesASwappedStagedFile() throws {
+        let (script, destination) = try makeScript(
+            payload: Data("the approved bytes".utf8),
+            stagedAs: Data("swapped in after the app's own hash check".utf8))
+
+        XCTAssertNotEqual(try runBash(script), 0, "a swapped staged file must fail the install")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path),
+                       "nothing may land at the destination")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path + ".hidisplay-partial"),
+                       "the partial file must be cleaned up on failure")
     }
 }

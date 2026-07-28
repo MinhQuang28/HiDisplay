@@ -9,6 +9,12 @@ public struct DisplayOverrideDocument: Equatable, Sendable {
     /// Entries read from an existing override that this codec does not understand. Carried through so
     /// regenerating an override never silently deletes another tool's modes.
     public var preservedEntries: [Data]
+    /// Top-level plist keys this app does not understand — `DisplayGammaTable`,
+    /// `DisplayWhitePointX`, whatever another tool wrote — carried through a merge rather than
+    /// dropped: "merge" that deletes a gamma table is not a merge. Each value is stored wrapped in a
+    /// single-entry plist (`["v": value]`) so the document stays `Equatable`/`Sendable` without
+    /// caring what type the value is.
+    public var preservedTopLevelEntries: [String: Data]
     /// Patched EDID to inject. Defaults to nil — see `OverrideGenerator` for why.
     public var patchedEDID: Data?
 
@@ -18,6 +24,7 @@ public struct DisplayOverrideDocument: Equatable, Sendable {
         displayName: String? = nil,
         scaleResolutions: [ScaledResolution],
         preservedEntries: [Data] = [],
+        preservedTopLevelEntries: [String: Data] = [:],
         patchedEDID: Data? = nil
     ) {
         self.vendorID = vendorID
@@ -25,6 +32,7 @@ public struct DisplayOverrideDocument: Equatable, Sendable {
         self.displayName = displayName
         self.scaleResolutions = scaleResolutions
         self.preservedEntries = preservedEntries
+        self.preservedTopLevelEntries = preservedTopLevelEntries
         self.patchedEDID = patchedEDID
     }
 }
@@ -98,6 +106,14 @@ public enum OverrideGenerator {
         // must not add one just because it can.
         if let edid = document.patchedEDID {
             plist["IODisplayEDID"] = edid
+        }
+
+        // Foreign top-level keys ride along unchanged. They can never collide with the keys above:
+        // `parseExisting` only captures keys it does not recognise.
+        for (key, wrapped) in document.preservedTopLevelEntries {
+            if let value = Self.unwrapPreservedValue(wrapped) {
+                plist[key] = value
+            }
         }
 
         let data: Data
@@ -177,7 +193,19 @@ public enum OverrideGenerator {
             "DisplayVendorID", "DisplayProductID", "DisplayProductName",
             "scale-resolutions", "IODisplayEDID",
         ]
-        let unknownKeys = plist.keys.filter { !known.contains($0) }.sorted()
+        // Unknown keys are captured for carry-through, not just reported. Only a key whose value
+        // cannot survive a plist round-trip ends up in `unknownKeys` — those are the ones a merge
+        // genuinely drops, and the ones the preview must warn about.
+        var preservedTopLevel: [String: Data] = [:]
+        var unknownKeys: [String] = []
+        for key in plist.keys where !known.contains(key) {
+            if let value = plist[key], let wrapped = wrapPreservedValue(value) {
+                preservedTopLevel[key] = wrapped
+            } else {
+                unknownKeys.append(key)
+            }
+        }
+        unknownKeys.sort()
 
         let document = DisplayOverrideDocument(
             vendorID: UInt32(plist["DisplayVendorID"] as? Int ?? 0),
@@ -185,8 +213,24 @@ public enum OverrideGenerator {
             displayName: plist["DisplayProductName"] as? String,
             scaleResolutions: resolutions,
             preservedEntries: preserved,
+            preservedTopLevelEntries: preservedTopLevel,
             patchedEDID: plist["IODisplayEDID"] as? Data)
         return (document, unknownKeys)
+    }
+
+    // MARK: - Preserved top-level values
+
+    /// A single plist value, wrapped in a one-entry dictionary so `PropertyListSerialization` always
+    /// has a container at the root regardless of the value's type.
+    static func wrapPreservedValue(_ value: Any) -> Data? {
+        try? PropertyListSerialization.data(
+            fromPropertyList: ["v": value], format: .xml, options: 0)
+    }
+
+    static func unwrapPreservedValue(_ wrapped: Data) -> Any? {
+        let plist = try? PropertyListSerialization.propertyList(
+            from: wrapped, options: [], format: nil)
+        return (plist as? [String: Any])?["v"]
     }
 }
 

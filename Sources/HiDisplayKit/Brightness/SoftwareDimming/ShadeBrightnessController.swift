@@ -52,7 +52,7 @@ public final class ShadeBrightnessController: BrightnessController {
         windows[display.cgDisplayID] = window
         // Reposition on every set: the display's frame changes with resolution and rearrangement, and
         // a stale frame leaves part of the screen undimmed or dims part of a neighbour.
-        window.setFrame(display.frame, display: false)
+        window.setFrame(Self.appKitFrame(for: display), display: false)
         window.backgroundColor = NSColor.black.withAlphaComponent(opacity)
         window.orderFrontRegardless()
     }
@@ -72,17 +72,45 @@ public final class ShadeBrightnessController: BrightnessController {
 
     /// Re-places existing shades after a display rearrangement.
     public func reposition(displays: [DisplayDevice]) {
-        let framesByID = Dictionary(uniqueKeysWithValues: displays.map { ($0.cgDisplayID, $0.frame) })
+        let displaysByID = Dictionary(uniqueKeysWithValues: displays.map { ($0.cgDisplayID, $0) })
         for (displayID, window) in windows {
-            guard let frame = framesByID[displayID] else {
+            guard let display = displaysByID[displayID] else {
                 // The display is gone; drop its overlay rather than leaving it stranded on whatever
                 // display macOS decides to put it on.
                 window.orderOut(nil)
                 windows.removeValue(forKey: displayID)
                 continue
             }
-            window.setFrame(frame, display: false)
+            window.setFrame(Self.appKitFrame(for: display), display: false)
         }
+    }
+
+    // MARK: - Coordinate spaces
+
+    /// The AppKit frame to give the shade window for a display.
+    ///
+    /// `DisplayDevice.frame` is `CGDisplayBounds` — CoreGraphics' *top*-left-origin space — while
+    /// `NSWindow.setFrame` expects AppKit's *bottom*-left-origin space. The two agree only when every
+    /// display's top edge lines up with the primary's; stack a monitor above or below the laptop and
+    /// a raw pass-through dims the wrong region entirely. Looking the display up in `NSScreen.screens`
+    /// avoids converting at all (the same trick `BrightnessOSD` uses); the manual flip is only the
+    /// fallback for the moment mid-reconfiguration when the screen list has not caught up yet.
+    private static func appKitFrame(for display: DisplayDevice) -> CGRect {
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        if let screen = NSScreen.screens.first(where: {
+            ($0.deviceDescription[key] as? NSNumber)?.uint32Value == display.cgDisplayID
+        }) {
+            return screen.frame
+        }
+        return flippedFrame(display.frame, primaryHeight: CGDisplayBounds(CGMainDisplayID()).height)
+    }
+
+    /// Converts a CoreGraphics display frame to AppKit's space by flipping around the primary
+    /// display's height. Pure, so the conversion — the part that is an easy off-by-a-screen bug —
+    /// is testable without windows.
+    static func flippedFrame(_ cgFrame: CGRect, primaryHeight: CGFloat) -> CGRect {
+        CGRect(x: cgFrame.origin.x, y: primaryHeight - cgFrame.maxY,
+               width: cgFrame.width, height: cgFrame.height)
     }
 
     // MARK: - Window

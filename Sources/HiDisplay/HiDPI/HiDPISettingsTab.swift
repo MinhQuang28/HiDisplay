@@ -135,11 +135,16 @@ struct HiDPISettingsTab: View {
         VStack(alignment: .leading, spacing: 0) {
             Picker("Display", selection: Binding(
                 get: { display?.id ?? "" },
-                set: { selection = $0; chosen = []; customResolutions = [] })
+                set: { selection = $0 })
             ) {
                 ForEach(eligibleDisplays) { Text($0.name).tag($0.id) }
             }
             .padding(.bottom, 10)
+            // One reset path for both ways the resolved display can change: the user picking another
+            // one, and the selected display disappearing — in which case `display` silently falls
+            // back to the first eligible one, and choices staged for the old panel must not carry
+            // over to it. (The picker's setter used to reset inline, which covered only the first.)
+            .onChangeCompat(of: display?.id) { resetStagingForDisplayChange() }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
@@ -245,16 +250,27 @@ struct HiDPISettingsTab: View {
             }
             .padding(8)
             .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-            .onAppear {
-                // Start from whatever the display is showing now, so the slider opens where the user is
-                // rather than at an arbitrary end of the range.
-                if scalingIndex < 0 {
-                    let currentWidth = display.currentMode?.width ?? steps[0].logicalWidth
-                    scalingIndex = Double(
-                        ResolutionPresets.nearestStepIndex(to: currentWidth, in: steps) ?? 0)
-                }
-            }
+            .onAppear { seedScalingIndexIfNeeded() }
         }
+    }
+
+    /// Starts the slider from whatever the display is showing now, so it opens where the user is
+    /// rather than at an arbitrary end of the range. A no-op once seeded.
+    private func seedScalingIndexIfNeeded() {
+        guard scalingIndex < 0, let display else { return }
+        let steps = display.nativePixelSize.map { ResolutionPresets.scalingSteps(nativePixels: $0) } ?? []
+        guard !steps.isEmpty else { return }
+        let currentWidth = display.currentMode?.width ?? steps[0].logicalWidth
+        scalingIndex = Double(ResolutionPresets.nearestStepIndex(to: currentWidth, in: steps) ?? 0)
+    }
+
+    /// Clears everything staged for the previous display and re-seeds the slider for the new one.
+    private func resetStagingForDisplayChange() {
+        chosen = []
+        customResolutions = []
+        customWidth = ""
+        scalingIndex = -1
+        seedScalingIndexIfNeeded()
     }
 
     /// Bulk selection, for people who want every scaled size rather than a curated handful.
@@ -268,7 +284,7 @@ struct HiDPISettingsTab: View {
         }
         HStack(spacing: 10) {
             Toggle("Show every step", isOn: $showFullLadder)
-                .onChange(of: showFullLadder) { _ in chosen.removeAll() }
+                .onChangeCompat(of: showFullLadder) { chosen.removeAll() }
             Spacer()
             Button("Select all (\(usable.count))") {
                 chosen.formUnion(usable.map(\.id))
@@ -510,11 +526,8 @@ struct HiDPISettingsTab: View {
             let installer = OverrideInstaller(
                 root: URL(fileURLWithPath: OverridePaths.systemOverrideRoot),
                 appVersion: AppModel.version)
-            // Merge, matching Install. This used to be `.replace`, because the staged file was written
-            // from `generated.data` while the manifest recorded the hash of the merged file — so the
-            // folder shipped a file its own restore.command would reject. The plan now carries the
-            // bytes it planned, and staging those makes the two agree under either policy.
-            let plan = try installer.plan(generated: generated, display: display, policy: .merge)
+            let plan = try installer.plan(
+                generated: generated, display: display, policy: AppModel.installPolicy)
 
             let package = try RecoveryPackageBuilder.create(manifest: plan.manifest, in: downloads)
 

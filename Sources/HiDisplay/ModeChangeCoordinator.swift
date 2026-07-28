@@ -68,7 +68,7 @@ enum ModeChangeCoordinator {
         alert.informativeText = text(revertAfter)
 
         // An accessory app has no windows and would otherwise show this behind whatever is frontmost.
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activateCompat()
 
         var remaining = revertAfter
         let timer = Timer(timeInterval: 1, repeats: true) { timer in

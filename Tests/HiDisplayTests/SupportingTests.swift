@@ -1,6 +1,49 @@
 import XCTest
 @testable import HiDisplayKit
 
+/// The CG→AppKit frame conversion behind shade placement.
+///
+/// CoreGraphics puts the origin at the primary display's *top*-left, AppKit at its *bottom*-left.
+/// The spaces coincide exactly when every display's top edge aligns with the primary's — which is why
+/// passing a CG frame straight to `NSWindow.setFrame` looks right on most desks and dims the wrong
+/// region on a stacked arrangement.
+final class ShadeFrameConversionTests: XCTestCase {
+
+    @MainActor
+    func testThePrimaryDisplayMapsToTheOrigin() {
+        XCTAssertEqual(
+            ShadeBrightnessController.flippedFrame(
+                CGRect(x: 0, y: 0, width: 1920, height: 1080), primaryHeight: 1080),
+            CGRect(x: 0, y: 0, width: 1920, height: 1080))
+    }
+
+    @MainActor
+    func testAMonitorAboveThePrimarySitsAboveItInAppKitSpace() {
+        // CG: above the primary means negative y. AppKit: it starts where the primary's top edge is.
+        XCTAssertEqual(
+            ShadeBrightnessController.flippedFrame(
+                CGRect(x: -320, y: -1440, width: 2560, height: 1440), primaryHeight: 1080),
+            CGRect(x: -320, y: 1080, width: 2560, height: 1440))
+    }
+
+    @MainActor
+    func testAMonitorBelowThePrimarySitsBelowItInAppKitSpace() {
+        XCTAssertEqual(
+            ShadeBrightnessController.flippedFrame(
+                CGRect(x: 0, y: 1080, width: 2560, height: 1440), primaryHeight: 1080),
+            CGRect(x: 0, y: -1440, width: 2560, height: 1440))
+    }
+
+    @MainActor
+    func testASideBySideMonitorOfEqualHeightIsUnchanged() {
+        // The arrangement where the raw pass-through happened to work — it must keep working.
+        XCTAssertEqual(
+            ShadeBrightnessController.flippedFrame(
+                CGRect(x: 1920, y: 0, width: 1920, height: 1080), primaryHeight: 1080),
+            CGRect(x: 1920, y: 0, width: 1920, height: 1080))
+    }
+}
+
 final class DisplayModeTests: XCTestCase {
 
     func testScaleFactorIsNotHardCodedToTwo() {

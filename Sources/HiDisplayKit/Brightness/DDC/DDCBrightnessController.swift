@@ -41,16 +41,40 @@ public actor DDCBrightnessController: BrightnessController {
                 isSupported: false, kind: .ddc, detail: "no DDC transport could bind to this display")
         }
 
+        let first = await probeRead(session, display: display)
+        guard first.retryOnFreshTransport else { return first.result }
+
+        // The session's transport bound its IOAVService when the session was created — possibly
+        // before a monitor sleep/wake or a fast unplug/replug swapped the service underneath it.
+        // The display's key never goes offline in those cases, so no disconnect tears the session
+        // down; without this rebind the probe fails against the dead service, the display downgrades
+        // to software dimming, and nothing ever tries DDC again.
+        await invalidate(key: display.id)
+        guard let fresh = self.session(for: display) else { return first.result }
+        Log.ddcBrightness.notice(
+            "\(display.id, privacy: .public): probe failed on a possibly stale transport; retrying on a fresh one")
+        return await probeRead(fresh, display: display).result
+    }
+
+    /// One probe read, including the tolerate-bad-checksum retry.
+    ///
+    /// `retryOnFreshTransport` is true for failures a stale transport explains — timeouts and I/O
+    /// errors — and false for answers that prove the transport works, like a monitor replying with
+    /// the null message for both frame shapes.
+    private func probeRead(
+        _ session: Session, display: DisplayDevice
+    ) async -> (result: BrightnessProbeResult, retryOnFreshTransport: Bool) {
         do {
             let reply = try await session.queue.readBrightness()
             updateRange(for: display.id, minimum: 0, maximum: reply.maximum,
                         tolerateChecksumMismatch: !reply.checksumValid)
             let normalized = VCPCodec.normalized(fromRaw: reply.current, minimum: 0, maximum: reply.maximum)
-            return BrightnessProbeResult(
+            return (BrightnessProbeResult(
                 isSupported: true, kind: .ddc, currentValue: normalized,
                 rawMinimum: 0, rawMaximum: reply.maximum,
                 detail: "read \(reply.current)/\(reply.maximum)"
-                    + (reply.checksumValid ? "" : " (monitor's reply checksum was wrong; tolerating)"))
+                    + (reply.checksumValid ? "" : " (monitor's reply checksum was wrong; tolerating)")),
+                false)
         } catch {
             // Retry once tolerating a bad checksum: enough monitors get the checksum wrong that
             // failing here would wrongly mark working hardware as unsupported.
@@ -60,16 +84,19 @@ public actor DDCBrightnessController: BrightnessController {
                     updateRange(for: display.id, minimum: 0, maximum: reply.maximum,
                                 tolerateChecksumMismatch: true)
                     let normalized = VCPCodec.normalized(fromRaw: reply.current, minimum: 0, maximum: reply.maximum)
-                    return BrightnessProbeResult(
+                    return (BrightnessProbeResult(
                         isSupported: true, kind: .ddc, currentValue: normalized,
                         rawMinimum: 0, rawMaximum: reply.maximum,
-                        detail: "read \(reply.current)/\(reply.maximum) with an invalid checksum")
+                        detail: "read \(reply.current)/\(reply.maximum) with an invalid checksum"),
+                        false)
                 } catch {
-                    return BrightnessProbeResult(
-                        isSupported: false, kind: .ddc, detail: "\(error)")
+                    return (BrightnessProbeResult(
+                        isSupported: false, kind: .ddc, detail: "\(error)"), false)
                 }
             }
-            return BrightnessProbeResult(isSupported: false, kind: .ddc, detail: "\(error)")
+            let ddcError = error as? DDCError
+            let retry = (ddcError?.isRetryable ?? false) || ddcError == .disconnected
+            return (BrightnessProbeResult(isSupported: false, kind: .ddc, detail: "\(error)"), retry)
         }
     }
 
@@ -79,7 +106,13 @@ public actor DDCBrightnessController: BrightnessController {
         }
         let reply = try await session.queue.readBrightness(
             tolerateChecksumMismatch: session.tolerateChecksumMismatch)
-        return VCPCodec.normalized(fromRaw: reply.current, minimum: session.range.minimum, maximum: reply.maximum)
+        // Keep the cached range in step with the reply, so the next *write* scales against the same
+        // maximum this read normalised with — mixing the cached range with a fresh reply is harmless
+        // while the minimum is always 0, and a trap the moment it is not.
+        updateRange(for: display.id, minimum: session.range.minimum, maximum: reply.maximum,
+                    tolerateChecksumMismatch: session.tolerateChecksumMismatch)
+        return VCPCodec.normalized(
+            fromRaw: reply.current, minimum: session.range.minimum, maximum: reply.maximum)
     }
 
     /// Fire-and-forget by design: the queue coalesces and the UI has already moved. Awaiting the wire

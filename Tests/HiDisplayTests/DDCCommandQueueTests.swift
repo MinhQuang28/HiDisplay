@@ -45,6 +45,16 @@ final class DDCCommandQueueTests: XCTestCase {
             XCTAssertEqual(frame[6], frame[0..<6].reduce(DDC.displayAddress) { $0 ^ $1 })
         }
         XCTAssertEqual(transport.recordedBrightnessValues.last, 100)
+
+        // And "spaced" is measured, not assumed: consecutive write starts must be at least the
+        // configured interval apart. `Task.sleep` never wakes early, so no tolerance is needed.
+        let instants = transport.writeInstants
+        XCTAssertGreaterThan(instants.count, 1, "the test needs at least two writes to measure a gap")
+        for (earlier, later) in zip(instants, instants.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(
+                earlier.duration(to: later), interval,
+                "two frames went out closer together than the minimum spacing")
+        }
     }
 
     func testInvalidateStopsFurtherWrites() async throws {
@@ -59,6 +69,64 @@ final class DDCCommandQueueTests: XCTestCase {
                       "a disconnected display must not receive commands")
         let isInvalid = await queue.isInvalidated
         XCTAssertTrue(isInvalid)
+    }
+
+    /// Records the *kind* of each transport call in order, so a test can prove a get/reply
+    /// transaction was never split by a set write. Small latencies widen the windows a reentrancy
+    /// bug would need.
+    private final class InterleaveDetectingTransport: DDCTransport, @unchecked Sendable {
+        enum Op: Equatable { case setWrite, getWrite, read }
+        let name = "interleave-detecting"
+        var isUsable: Bool { true }
+
+        private let lock = NSLock()
+        private var ops: [Op] = []
+        private let reply: [UInt8]
+
+        init(reply: [UInt8]) { self.reply = reply }
+
+        func write(_ bytes: [UInt8]) async throws {
+            let opcodeIndex = bytes.first == DDC.hostAddress ? 2 : 1
+            let op: Op = bytes.count > opcodeIndex + 1 && bytes[opcodeIndex] == 0x03 ? .setWrite : .getWrite
+            lock.withLock { ops.append(op) }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        func read(length: Int) async throws -> [UInt8] {
+            lock.withLock { ops.append(.read) }
+            try await Task.sleep(for: .milliseconds(5))
+            return reply
+        }
+
+        var snapshot: [Op] { lock.withLock { ops } }
+    }
+
+    /// The queue's central promise: exactly one frame on the wire at a time. Actor isolation alone
+    /// does not deliver it — every `await` is a suspension point, so without an explicit bus token a
+    /// drain loop can slip a Set frame into the ~50 ms gap between a Get request and its reply.
+    func testAReadTransactionIsNeverInterleavedWithWrites() async throws {
+        var frame: [UInt8] = [0x6E, 0x88, 0x02, 0x00, 0x10, 0x00, 0x00, 0x64, 0x00, 0x2A]
+        frame.append(frame.reduce(DDC.replyChecksumSeed) { $0 ^ $1 })
+        let transport = InterleaveDetectingTransport(reply: frame)
+        let queue = DDCCommandQueue(transport: transport, label: "test", writeInterval: .milliseconds(1))
+
+        // Several reads while a stream of writes arrives, so every reply-delay window is contested.
+        let reads = Task {
+            for _ in 0..<5 { _ = try await queue.readBrightness() }
+        }
+        for value: UInt16 in 1...30 {
+            await queue.setBrightness(raw: value)
+            try await Task.sleep(for: .milliseconds(8))
+        }
+        try await reads.value
+
+        let ops = transport.snapshot
+        XCTAssertEqual(ops.filter { $0 == .getWrite }.count, 5)
+        for (index, op) in ops.enumerated() where op == .getWrite {
+            XCTAssertEqual(
+                ops[index + 1], .read,
+                "a set write landed inside a get/reply transaction at index \(index)")
+        }
     }
 
     /// A display that answers only one frame shape, like a real one on a given DisplayPort mode.
@@ -235,5 +303,84 @@ final class DDCCommandQueueTests: XCTestCase {
             lastCount = count
             try await Task.sleep(for: .milliseconds(60))
         }
+    }
+}
+
+/// The transport-rebind path that recovers DDC after a monitor sleep/wake or fast replug.
+///
+/// In both cases the display's key never goes offline, so nothing tears the session down — the old
+/// behaviour was to fail the probe against the dead IOAVService, downgrade to software dimming, and
+/// never try DDC again.
+final class DDCBrightnessControllerRebindTests: XCTestCase {
+
+    private func makeExternalDisplay() -> DisplayDevice {
+        DisplayDevice(
+            identity: DisplayIdentity(
+                cgDisplayID: 7, vendorID: 0x10AC, productID: 0xD0A1,
+                serialNumber: 0xABCD, keyTier: .strong),
+            name: "TEST U2723QE", isBuiltIn: false, isOnline: true, isMain: false)
+    }
+
+    private func validReply(current: UInt8) -> [UInt8] {
+        var frame: [UInt8] = [0x6E, 0x88, 0x02, 0x00, 0x10, 0x00, 0x00, 0x64, 0x00, current]
+        frame.append(frame.reduce(DDC.replyChecksumSeed) { $0 ^ $1 })
+        return frame
+    }
+
+    /// Thread-safe bind counter: the factory closure is `@Sendable` and called from the actor.
+    private final class BindCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        func next() -> Int { lock.withLock { count += 1; return count } }
+        var value: Int { lock.withLock { count } }
+    }
+
+    func testProbeRebindsAFreshTransportWhenTheFirstReadTimesOut() async {
+        let binds = BindCounter()
+        let reply = validReply(current: 40)
+        let controller = DDCBrightnessController(makeTransport: { _ in
+            // First bind: the pre-sleep transport, now dead — every call times out.
+            // Second bind: the fresh service, answering normally.
+            if binds.next() == 1 {
+                let dead = FakeDDCTransport()
+                dead.errorToThrow = .timeout
+                return dead
+            }
+            return FakeDDCTransport(replies: [reply])
+        })
+
+        let result = await controller.probe(display: makeExternalDisplay())
+
+        XCTAssertTrue(result.isSupported, "a fresh transport answered; the display supports DDC")
+        XCTAssertEqual(binds.value, 2, "the dead transport must be dropped and rebound exactly once")
+    }
+
+    func testProbeDoesNotRebindWhenTheMonitorAnswersNull() async {
+        let binds = BindCounter()
+        let nullReply = Array(repeating: VCPCodec.nullMessage, count: 4).flatMap { $0 }
+        let controller = DDCBrightnessController(makeTransport: { _ in
+            _ = binds.next()
+            return FakeDDCTransport(replies: [nullReply])
+        })
+
+        let result = await controller.probe(display: makeExternalDisplay())
+
+        XCTAssertFalse(result.isSupported)
+        XCTAssertEqual(binds.value, 1,
+                       "a null answer proves the transport works — rebinding would just repeat it")
+    }
+
+    func testProbeSucceedsFirstTimeWithoutRebinding() async {
+        let binds = BindCounter()
+        let reply = validReply(current: 60)
+        let controller = DDCBrightnessController(makeTransport: { _ in
+            _ = binds.next()
+            return FakeDDCTransport(replies: [reply])
+        })
+
+        let result = await controller.probe(display: makeExternalDisplay())
+
+        XCTAssertTrue(result.isSupported)
+        XCTAssertEqual(binds.value, 1)
     }
 }

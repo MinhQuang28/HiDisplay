@@ -61,8 +61,11 @@ public actor ProfileStore {
             Log.profile.debug("loaded \(self.document.profiles.count) profile(s)")
         } catch {
             // Keep the unreadable file rather than overwriting it: it is the user's data, and a
-            // corrupt-looking file is often recoverable by hand.
+            // corrupt-looking file is often recoverable by hand. Remove a stale salvage first —
+            // `copyItem` refuses to overwrite, so a second corruption would silently lose the newer
+            // evidence while looking like it had been kept.
             let salvage = fileURL.appendingPathExtension("corrupt")
+            try? fileManager.removeItem(at: salvage)
             try? fileManager.copyItem(at: fileURL, to: salvage)
             Log.profile.error("could not read profiles (\(String(describing: error), privacy: .public)); kept a copy at \(salvage.lastPathComponent, privacy: .public)")
         }
