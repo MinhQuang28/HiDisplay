@@ -120,11 +120,15 @@ public final class FakeDDCTransport: DDCTransport, @unchecked Sendable {
     public var recordedBrightnessValues: [UInt16] {
         lock.withLock {
             recordedWrites.compactMap { frame in
-                // Wire offsets: the host-address byte is carried by the I2C sub-address, so the
-                // opcode is byte 1 rather than byte 2.
-                guard frame.count >= 5, frame[1] == 0x03, frame[2] == VCPCode.brightness.rawValue
+                // Shape-agnostic: the leading host-address byte is present or absent depending on
+                // `DDC.FrameShape`. Unambiguous to detect — a length byte is always 0x80 | n, so a
+                // first byte below 0x80 can only be the host address. The opcode follows the length.
+                let opcode = frame.first == DDC.hostAddress ? 2 : 1
+                guard frame.count >= opcode + 4,
+                      frame[opcode] == 0x03,
+                      frame[opcode + 1] == VCPCode.brightness.rawValue
                 else { return nil }
-                return UInt16(frame[3]) << 8 | UInt16(frame[4])
+                return UInt16(frame[opcode + 2]) << 8 | UInt16(frame[opcode + 3])
             }
         }
     }

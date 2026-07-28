@@ -88,30 +88,49 @@ Reply, 11 bytes:
 checksum seeded with 0x50
 ```
 
-### The host address is checksummed but not sent
+### Whether the host address goes on the wire depends on the link
 
-The single most expensive detail in this file. `IOAVServiceWriteI2C(service, 0x37, 0x51, data, len)`
-takes the sub-address as its third argument and puts that byte on the bus itself. The frames above
-*begin* with the same 0x51, because the checksum covers it — but including it in `data` makes the
-display receive `51 51 82 01 10 AC`, which it cannot parse.
+The single most expensive detail in this file, and it has no fixed answer.
 
-So the wire bytes are the frame minus its first byte:
+`IOAVServiceWriteI2C(service, 0x37, 0x51, data, len)` takes the sub-address as its third argument. The
+frames above *begin* with that same 0x51. Whether the driver emits it for you — making a copy in
+`data` a duplicate the display cannot parse — depends on the transport underneath. DisplayPort 1.1
+carries DDC as I2C-over-AUX emulation; 1.2 and later use native AUX; the two paths disagree.
 
-```
-frame:  51 82 01 10 AC        <- what the checksum is computed over
-wire:      82 01 10 AC        <- what IOAVServiceWriteI2C is given
-```
+Measured on one ViewSonic VX2780-2K, toggling only that monitor's own "DisplayPort 1.1" OSD setting
+and changing nothing else:
 
-A display that cannot parse a request replies with a **null message**, `6E 80 BE`. That is a
-well-formed frame with a correct checksum, and it is also what a display sends when DDC/CI is switched
-off in its OSD — so a framing bug and a disabled monitor are indistinguishable from the outside. On a
-ViewSonic VX2780-2K this cost a full debugging session: OSD toggled, competing apps quit, timing swept
-50–200 ms, read lengths 11 and 12, chip 0x37/0x6E, offsets 0x51/0x00 — every combination null, until
-the leading byte was dropped and the very first attempt returned
-`6E 88 02 00 10 00 00 64 00 4B 8B`.
+| DP 1.1 | frame that gets a reply | wire bytes |
+| --- | --- | --- |
+| on | `withoutHostAddress` | `82 01 10 AC` |
+| off | `withHostAddress` | `51 82 01 10 AC` |
+
+The checksum is the same either way, and is always computed over the full frame including the 0x51:
+the display reconstructs that byte from the sub-address before verifying.
+
+`DDCCommandQueue` therefore does not assume. It sends the shape it is holding, and on a null message
+sends the other one and adopts whichever answers. It re-learns on *every* null message rather than
+latching once, because the setting that changes this lives in the monitor's menu and toggling it does
+not force a reconnect — a shape confirmed at probe time can stop working under a live connection.
+
+### The null message is the only symptom
+
+A display that cannot parse a request replies `6E 80 BE`: a well-formed frame, correct checksum, zero
+payload. Reading 11 or 12 bytes just repeats it. Nothing errors and nothing times out.
+
+That same reply is what a display sends when DDC/CI is switched off in its OSD, so a framing problem
+and a disabled monitor are indistinguishable from the outside. On the VX2780-2K this cost a full
+session: OSD toggled, competing apps quit, timing swept 50–200 ms, read lengths 11 and 12, chip
+0x37/0x6E, offsets 0x51/0x00 — every combination null, until the frame shape was changed.
+
+Because it is the one signal a wrong shape gives, `VCPCodec.DecodeError.nullMessage` is its own case,
+checked before the checksum. Reported as `badChecksum` — which it also technically is, since the read
+buffer runs past the three bytes actually sent — the recovery above never happens.
 
 Reach for `hidisplay-probe --ddc-sweep` before believing a monitor is at fault. It tries both frame
-shapes across several chip addresses and offsets and prints raw bytes, decoding nothing.
+shapes across several chip addresses and offsets and prints raw bytes, decoding nothing. Run it with
+nothing else touching the bus: I2C is not shareable, and a concurrent probe produces readings that
+look like a hardware quirk and are not.
 
 ### Reply checksum seed is 0x50, not 0x51
 

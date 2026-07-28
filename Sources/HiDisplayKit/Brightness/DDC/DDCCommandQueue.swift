@@ -35,6 +35,20 @@ public actor DDCCommandQueue {
     private var isDraining = false
     private var invalidated = false
 
+    /// Which wire shape this display answers, learned from its replies. See `DDC.FrameShape`.
+    ///
+    /// Not a preference and not knowable up front: the same monitor needs different shapes depending
+    /// on the DisplayPort mode its link negotiated. Wrong-shape requests come back as null messages
+    /// rather than errors, so the only way to know is to send one and look.
+    /// Re-learned on every null message rather than latched once. The link mode can change under a
+    /// live connection — a monitor's DisplayPort-version setting is in its OSD, and toggling it does
+    /// not force a reconnect — so a shape confirmed at probe time can stop working without the queue
+    /// ever being torn down.
+    private var frameShape: DDC.FrameShape = .withHostAddress
+
+    /// The shape currently in use, for diagnostics.
+    public var currentFrameShape: DDC.FrameShape { frameShape }
+
     public init(
         transport: DDCTransport,
         label: String,
@@ -77,7 +91,8 @@ public actor DDCCommandQueue {
         while !invalidated, let value = pendingValue {
             pendingValue = nil
             do {
-                try await transport.write(VCPCodec.setRequest(code: .brightness, value: value))
+                try await transport.write(
+                    VCPCodec.setRequest(code: .brightness, value: value, shape: frameShape))
             } catch {
                 Log.ddcBrightness.debug("\(self.label, privacy: .public): write failed: \(String(describing: error), privacy: .public)")
                 // Do not retry writes. A brightness write is idempotent and superseded a moment later
@@ -117,8 +132,35 @@ public actor DDCCommandQueue {
         throw lastError
     }
 
+    /// Reads with the remembered shape, and on a null message tries the other one before giving up.
+    ///
+    /// A null message is the *only* signal a wrong shape gives; it is never an I/O error. Without this
+    /// second attempt the app reports "no DDC" on any link whose driver disagrees with the shape it
+    /// happens to be holding — which is how toggling one OSD setting on a VX2780-2K turned working DDC
+    /// into none.
     private func performRead(tolerateChecksumMismatch: Bool) async throws -> VCPCodec.Reply {
-        try await transport.write(VCPCodec.getRequest(code: .brightness))
+        do {
+            return try await read(shape: frameShape, tolerateChecksumMismatch: tolerateChecksumMismatch)
+        } catch DDCError.decode(.nullMessage) {
+            let alternative: DDC.FrameShape =
+                frameShape == .withHostAddress ? .withoutHostAddress : .withHostAddress
+            // Space the retry: a display that just answered null is mid-recovery, and an immediate
+            // second request is the one most likely to be ignored too.
+            try? await Task.sleep(for: DDC.writeInterval)
+
+            let reply = try await read(
+                shape: alternative, tolerateChecksumMismatch: tolerateChecksumMismatch)
+            frameShape = alternative
+            Log.ddcBrightness.notice(
+                "\(self.label, privacy: .public): switched to frame shape \(String(describing: alternative), privacy: .public)")
+            return reply
+        }
+    }
+
+    private func read(
+        shape: DDC.FrameShape, tolerateChecksumMismatch: Bool
+    ) async throws -> VCPCodec.Reply {
+        try await transport.write(VCPCodec.getRequest(code: .brightness, shape: shape))
         try await Task.sleep(for: DDC.replyDelay)
 
         // Bound the read itself: a monitor that never answers must not hold the queue forever.

@@ -40,9 +40,9 @@ final class DDCCommandQueueTests: XCTestCase {
         // Every recorded frame must be a complete, well-formed set request. Interleaved writes would
         // corrupt framing, so this also proves nothing overlapped.
         for frame in transport.recordedWrites {
-            XCTAssertEqual(frame.count, 6, "wire frame: the host address is carried by the sub-address")
-            XCTAssertEqual(frame[1], 0x03)
-            XCTAssertEqual(frame[5], frame[0..<5].reduce(DDC.displayAddress ^ DDC.hostAddress) { $0 ^ $1 })
+            XCTAssertEqual(frame.count, 7, "the queue's default shape sends the host address")
+            XCTAssertEqual(frame[2], 0x03)
+            XCTAssertEqual(frame[6], frame[0..<6].reduce(DDC.displayAddress) { $0 ^ $1 })
         }
         XCTAssertEqual(transport.recordedBrightnessValues.last, 100)
     }
@@ -59,6 +59,89 @@ final class DDCCommandQueueTests: XCTestCase {
                       "a disconnected display must not receive commands")
         let isInvalid = await queue.isInvalidated
         XCTAssertTrue(isInvalid)
+    }
+
+    /// A display that answers only one frame shape, like a real one on a given DisplayPort mode.
+    ///
+    /// Everything else gets the null message — which is what makes this bug so hard to see from the
+    /// outside: nothing errors, nothing times out, the monitor politely says nothing at all.
+    private final class ShapeSensitiveTransport: DDCTransport, @unchecked Sendable {
+        let name = "shape-sensitive"
+        var isUsable: Bool { true }
+
+        private let answers: DDC.FrameShape
+        private let current: UInt8
+        private let lock = NSLock()
+        private var lastWriteMatched = false
+        private(set) var shapesSeen: [DDC.FrameShape] = []
+
+        init(answers: DDC.FrameShape, current: UInt8) {
+            self.answers = answers
+            self.current = current
+        }
+
+        func write(_ bytes: [UInt8]) async throws {
+            let shape: DDC.FrameShape =
+                bytes.first == DDC.hostAddress ? .withHostAddress : .withoutHostAddress
+            lock.withLock {
+                shapesSeen.append(shape)
+                lastWriteMatched = shape == answers
+            }
+        }
+
+        func read(length: Int) async throws -> [UInt8] {
+            let matched = lock.withLock { lastWriteMatched }
+            guard matched else {
+                return Array(repeating: VCPCodec.nullMessage, count: 4).flatMap { $0 }
+            }
+            var frame: [UInt8] = [0x6E, 0x88, 0x02, 0x00, 0x10, 0x00, 0x00, 0x64, 0x00, current]
+            frame.append(frame.reduce(DDC.replyChecksumSeed) { $0 ^ $1 })
+            return frame
+        }
+    }
+
+    /// The VX2780-2K regression: the same monitor needs the opposite frame shape once its DisplayPort
+    /// 1.1 setting is toggled, and the wrong shape reports as "no DDC" rather than as an error.
+    func testAReadRecoversByTryingTheOtherFrameShape() async throws {
+        for expected in DDC.FrameShape.allCases {
+            let transport = ShapeSensitiveTransport(answers: expected, current: 58)
+            let queue = DDCCommandQueue(transport: transport, label: "test", writeInterval: interval)
+
+            let reply = try await queue.readBrightness()
+            XCTAssertEqual(reply.current, 58, "\(expected)")
+
+            let adopted = await queue.currentFrameShape
+            XCTAssertEqual(adopted, expected, "the working shape must be remembered, not rediscovered")
+        }
+    }
+
+    /// Having learned the shape, writes must use it too — otherwise brightness reads back correctly
+    /// while the slider does nothing.
+    func testWritesUseTheLearnedFrameShape() async throws {
+        let transport = ShapeSensitiveTransport(answers: .withoutHostAddress, current: 58)
+        let queue = DDCCommandQueue(transport: transport, label: "test", writeInterval: interval)
+        _ = try await queue.readBrightness()
+
+        let framesBefore = transport.shapesSeen.count
+        await queue.setBrightness(raw: 42)
+        try await waitUntil { transport.shapesSeen.count > framesBefore }
+
+        XCTAssertEqual(transport.shapesSeen.last, .withoutHostAddress,
+                       "the write went out in the shape that failed")
+    }
+
+    /// A display that answers neither shape must still fail, and say why.
+    func testBothShapesNullStillFails() async {
+        let transport = FakeDDCTransport(
+            replies: [Array(repeating: VCPCodec.nullMessage, count: 4).flatMap { $0 }])
+        let queue = DDCCommandQueue(transport: transport, label: "test")
+
+        do {
+            _ = try await queue.readBrightness()
+            XCTFail("expected a decode failure")
+        } catch {
+            XCTAssertEqual(error as? DDCError, .decode(.nullMessage))
+        }
     }
 
     func testReadThrowsDisconnectedAfterInvalidate() async {
@@ -131,6 +214,18 @@ final class DDCCommandQueueTests: XCTestCase {
     }
 
     /// Waits until the transport stops receiving writes, so assertions run after the drain loop ends.
+    /// Polls until `condition` holds, for transports the `FakeDDCTransport`-shaped helper cannot take.
+    private func waitUntil(
+        timeout: Duration = .seconds(3), _ condition: @Sendable () -> Bool
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTFail("condition never became true within \(timeout)")
+    }
+
     private func waitUntilQuiet(_ transport: FakeDDCTransport, timeout: Duration = .seconds(3)) async throws {
         let deadline = ContinuousClock.now + timeout
         var lastCount = -1

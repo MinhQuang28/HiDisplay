@@ -17,6 +17,32 @@ public enum DDC {
     /// Host source address — the first byte of every host→display frame, and the same value as
     /// `dataOffset` because that byte *is* the I2C sub-address.
     public static let hostAddress: UInt8 = 0x51
+    /// Whether the leading host-address byte goes on the wire.
+    ///
+    /// Not a style choice — the same monitor needs different answers depending on how the link is
+    /// running. `IOAVServiceWriteI2C` takes a sub-address (`dataOffset`, 0x51) alongside the data
+    /// buffer, and DDC/CI frames begin with that identical byte. Whether the DCP driver emits it
+    /// itself depends on the transport underneath: DisplayPort 1.1 carries DDC as I2C-over-AUX
+    /// emulation, 1.2 and later use native AUX, and the two paths disagree.
+    ///
+    /// Measured on one ViewSonic VX2780-2K, toggling only the monitor's own "DisplayPort 1.1" OSD
+    /// setting, nothing else changed:
+    ///
+    /// | DP 1.1 | frame that gets a reply |
+    /// | --- | --- |
+    /// | on  | `withoutHostAddress` — `82 01 10 AC` |
+    /// | off | `withHostAddress` — `51 82 01 10 AC` |
+    ///
+    /// The wrong shape produces a null message, never an error, so nothing detects this except trying
+    /// the other one. `DDCCommandQueue` learns which applies and remembers it.
+    public enum FrameShape: Sendable, CaseIterable {
+        /// Send the frame whole. The driver passes the buffer through untouched.
+        case withHostAddress
+        /// Drop the leading byte; the driver emits the sub-address itself. Sending it too makes the
+        /// display receive `51 51 82 …`, which it cannot parse.
+        case withoutHostAddress
+    }
+
     /// Checksum seed for display→host replies.
     ///
     /// 0x50, not `hostAddress`. The two differ by the I2C read/write bit: 0x51 is the host address a
@@ -45,17 +71,17 @@ public enum VCPCodec {
 
     /// Turns a complete DDC/CI frame into the bytes that actually go on the wire.
     ///
-    /// The leading host-address byte is checksummed but **not transmitted**: `IOAVServiceWriteI2C`
-    /// takes the sub-address as its own argument (`DDC.dataOffset`, the identical 0x51) and puts it on
-    /// the bus itself. Sending it again makes the display see `51 51 82 …`, and a display that cannot
-    /// parse a request answers with a null message — indistinguishable, from the outside, from DDC/CI
-    /// being switched off in its OSD.
+    /// The checksum always covers the whole frame including the leading host address, whichever shape
+    /// is transmitted — a display given `82 01 10 AC` still reconstructs the 0x51 from the sub-address
+    /// before verifying. That is why the checksum is computed here, once, rather than per shape.
     ///
-    /// Found by sweeping both shapes against a ViewSonic VX2780-2K. One byte apart: the frame with the
-    /// leading 0x51 got `6E 80 BE` at every timing and address tried, the frame without it got
-    /// `6E 88 02 00 10 00 00 64 00 4B 8B` on the first attempt. See `Tests/HardwareMatrix/results.md`.
-    private static func wireBytes(_ frame: [UInt8]) -> [UInt8] {
-        Array(frame.dropFirst()) + [checksum(seed: DDC.displayAddress, bytes: frame)]
+    /// See `DDC.FrameShape` for why the shape is not a constant.
+    private static func wireBytes(_ frame: [UInt8], shape: DDC.FrameShape) -> [UInt8] {
+        let checksum = checksum(seed: DDC.displayAddress, bytes: frame)
+        switch shape {
+        case .withHostAddress: return frame + [checksum]
+        case .withoutHostAddress: return Array(frame.dropFirst()) + [checksum]
+        }
     }
 
     /// `Set VCP Feature` frame.
@@ -64,9 +90,11 @@ public enum VCPCodec {
     /// 51 84 03 <code> <value hi> <value lo> <checksum>
     /// │  │  └─ Set VCP Feature opcode
     /// │  └──── 0x80 | payload length (4)
-    /// └─────── host source address — checksummed, but carried by the I2C sub-address
+    /// └─────── host source address — always checksummed, transmitted only for `.withHostAddress`
     /// ```
-    public static func setRequest(code: VCPCode, value: UInt16) -> [UInt8] {
+    public static func setRequest(
+        code: VCPCode, value: UInt16, shape: DDC.FrameShape = .withHostAddress
+    ) -> [UInt8] {
         wireBytes([
             DDC.hostAddress,
             0x80 | 4,
@@ -74,7 +102,7 @@ public enum VCPCodec {
             code.rawValue,
             UInt8(truncatingIfNeeded: value >> 8),
             UInt8(truncatingIfNeeded: value),
-        ])
+        ], shape: shape)
     }
 
     /// `Get VCP Feature` request frame.
@@ -82,13 +110,15 @@ public enum VCPCodec {
     /// ```
     /// 51 82 01 <code> <checksum>
     /// ```
-    public static func getRequest(code: VCPCode) -> [UInt8] {
+    public static func getRequest(
+        code: VCPCode, shape: DDC.FrameShape = .withHostAddress
+    ) -> [UInt8] {
         wireBytes([
             DDC.hostAddress,
             0x80 | 2,
             0x01,
             code.rawValue,
-        ])
+        ], shape: shape)
     }
 
     /// Length of the `Get VCP Feature Reply` frame.
@@ -103,8 +133,18 @@ public enum VCPCodec {
         public let checksumValid: Bool
     }
 
+    /// The DDC/CI null message, `6E 80 BE`: a display saying it has nothing to send.
+    ///
+    /// Well-formed, correct checksum, zero payload. Reading a longer buffer just repeats these three
+    /// bytes. It is what a display returns for a request it could not parse — so in practice it means
+    /// the frame shape is wrong — and equally what it returns when DDC/CI is disabled in its OSD.
+    public static let nullMessage: [UInt8] = [DDC.displayAddress, 0x80, 0xBE]
+
     public enum DecodeError: Error, Equatable, CustomStringConvertible {
         case shortFrame(got: Int)
+        /// See `VCPCodec.nullMessage`. Distinguished from other malformed replies because it is the
+        /// one the caller can act on: try the other frame shape.
+        case nullMessage
         case notAFeatureReply(opcode: UInt8)
         /// Result code byte non-zero: the display understood the request and refused it, which is how
         /// a monitor says "I do not support this VCP code".
@@ -116,6 +156,9 @@ public enum VCPCodec {
         public var description: String {
             switch self {
             case .shortFrame(let got): return "DDC reply too short (\(got) bytes)"
+            case .nullMessage:
+                return "display returned a null message — it did not understand the request, or "
+                    + "DDC/CI is switched off in its menu"
             case .notAFeatureReply(let opcode): return "unexpected DDC opcode 0x\(String(opcode, radix: 16))"
             case .unsupportedFeature(let code): return "display refused the feature (result 0x\(String(code, radix: 16)))"
             case .codeMismatch(let expected, let got):
@@ -143,6 +186,11 @@ public enum VCPCodec {
         tolerateChecksumMismatch: Bool = false
     ) throws -> Reply {
         guard bytes.count >= replyLength else { throw DecodeError.shortFrame(got: bytes.count) }
+
+        // Before the checksum, which a null message fails only because the buffer is longer than the
+        // three bytes the display actually sent. Reporting that as corruption would hide the one thing
+        // this reply reliably means.
+        guard !bytes.starts(with: nullMessage) else { throw DecodeError.nullMessage }
 
         // The checksum covers everything but the final byte. Unlike a request, the reply is
         // transmitted whole — the display's address is really there in byte 0 — so nothing is dropped.

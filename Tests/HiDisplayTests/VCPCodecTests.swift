@@ -5,45 +5,75 @@ import XCTest
 /// is why it has to be provable without a monitor.
 final class VCPCodecTests: XCTestCase {
 
-    /// The host address is checksummed but never transmitted — the I2C sub-address carries it. These
-    /// tests assert the *wire* bytes, so a regression that puts 0x51 back is a test failure rather
-    /// than a monitor that mysteriously answers null messages.
     func testSetRequestFraming() {
-        let frame = VCPCodec.setRequest(code: .brightness, value: 50)
-        XCTAssertEqual(frame.count, 6, "6 on the wire: the 7-byte frame minus its host-address byte")
-        XCTAssertNotEqual(frame[0], 0x51, "the host address must not be transmitted")
-        XCTAssertEqual(frame[0], 0x84, "0x80 | payload length 4")
-        XCTAssertEqual(frame[1], 0x03, "Set VCP Feature")
-        XCTAssertEqual(frame[2], 0x10, "brightness")
-        XCTAssertEqual(frame[3], 0x00, "value high byte")
-        XCTAssertEqual(frame[4], 50, "value low byte")
+        let frame = VCPCodec.setRequest(code: .brightness, value: 50, shape: .withHostAddress)
+        XCTAssertEqual(frame.count, 7)
+        XCTAssertEqual(frame[0], 0x51, "host source address")
+        XCTAssertEqual(frame[1], 0x84, "0x80 | payload length 4")
+        XCTAssertEqual(frame[2], 0x03, "Set VCP Feature")
+        XCTAssertEqual(frame[3], 0x10, "brightness")
+        XCTAssertEqual(frame[4], 0x00, "value high byte")
+        XCTAssertEqual(frame[5], 50, "value low byte")
 
-        // Seeded with the display address and covering the untransmitted 0x51, which is why the seed
-        // here is `displayAddress ^ hostAddress` rather than `displayAddress` alone.
-        let expected = frame[0..<5].reduce(DDC.displayAddress ^ DDC.hostAddress) { $0 ^ $1 }
-        XCTAssertEqual(frame[5], expected, "checksum still covers the host address byte")
+        let expected = frame[0..<6].reduce(DDC.displayAddress) { $0 ^ $1 }
+        XCTAssertEqual(frame[6], expected, "checksum is XOR seeded with the display address")
     }
 
     func testSetRequestSplitsValuesAboveOneByte() {
         let frame = VCPCodec.setRequest(code: .brightness, value: 0x0123)
-        XCTAssertEqual(frame[3], 0x01)
-        XCTAssertEqual(frame[4], 0x23)
+        XCTAssertEqual(frame[4], 0x01)
+        XCTAssertEqual(frame[5], 0x23)
     }
 
     func testGetRequestFraming() {
-        let frame = VCPCodec.getRequest(code: .brightness)
-        XCTAssertEqual(frame.count, 4)
-        XCTAssertEqual(Array(frame[0...2]), [0x82, 0x01, 0x10])
-        XCTAssertEqual(frame[3], frame[0..<3].reduce(DDC.displayAddress ^ DDC.hostAddress) { $0 ^ $1 })
+        let frame = VCPCodec.getRequest(code: .brightness, shape: .withHostAddress)
+        XCTAssertEqual(frame.count, 5)
+        XCTAssertEqual(Array(frame[0...3]), [0x51, 0x82, 0x01, 0x10])
+        XCTAssertEqual(frame[4], frame[0..<4].reduce(DDC.displayAddress) { $0 ^ $1 })
+    }
+
+    /// Dropping the host address must change only which bytes are sent, never the checksum: the
+    /// display reconstructs that byte from the I2C sub-address before verifying.
+    func testTheTwoShapesDifferByExactlyTheLeadingByte() {
+        for value in [UInt16(0), 30, 100, 0x0123] {
+            let full = VCPCodec.setRequest(code: .brightness, value: value, shape: .withHostAddress)
+            let short = VCPCodec.setRequest(code: .brightness, value: value, shape: .withoutHostAddress)
+            XCTAssertEqual(Array(full.dropFirst()), short, "value \(value)")
+        }
+        XCTAssertEqual(
+            Array(VCPCodec.getRequest(code: .brightness, shape: .withHostAddress).dropFirst()),
+            VCPCodec.getRequest(code: .brightness, shape: .withoutHostAddress))
     }
 
     /// The exact bytes a ViewSonic VX2780-2K accepted, captured by `hidisplay-probe --ddc-sweep`.
     ///
-    /// Golden-value tests rather than recomputed ones: every derived assertion above would still pass
-    /// if the whole frame were shifted, and a shift is precisely the bug that cost this project a day.
+    /// Both shapes are golden values because both are correct — on the same monitor, differing only in
+    /// whether its OSD "DisplayPort 1.1" setting is on. Recomputed assertions would all still pass if
+    /// the frame were shifted, and a shift is exactly the bug these pin.
     func testFramesMatchWhatRealHardwareAccepted() {
-        XCTAssertEqual(VCPCodec.getRequest(code: .brightness), [0x82, 0x01, 0x10, 0xAC])
-        XCTAssertEqual(VCPCodec.setRequest(code: .brightness, value: 30), [0x84, 0x03, 0x10, 0x00, 0x1E, 0xB6])
+        XCTAssertEqual(
+            VCPCodec.getRequest(code: .brightness, shape: .withHostAddress),
+            [0x51, 0x82, 0x01, 0x10, 0xAC], "accepted with DisplayPort 1.1 off")
+        XCTAssertEqual(
+            VCPCodec.getRequest(code: .brightness, shape: .withoutHostAddress),
+            [0x82, 0x01, 0x10, 0xAC], "accepted with DisplayPort 1.1 on")
+        XCTAssertEqual(
+            VCPCodec.setRequest(code: .brightness, value: 30, shape: .withoutHostAddress),
+            [0x84, 0x03, 0x10, 0x00, 0x1E, 0xB6])
+    }
+
+    /// Both captured replies, from the two link modes. Same display, same brightness scale.
+    func testDecodesRepliesFromBothLinkModes() throws {
+        let cases: [(name: String, bytes: [UInt8], current: UInt16)] = [
+            ("DP 1.1 on", [0x6E, 0x88, 0x02, 0x00, 0x10, 0x00, 0x00, 0x64, 0x00, 0x4B, 0x8B], 75),
+            ("DP 1.1 off", [0x6E, 0x88, 0x02, 0x00, 0x10, 0x00, 0x00, 0x64, 0x00, 0x3A, 0xFA], 58),
+        ]
+        for testCase in cases {
+            let reply = try VCPCodec.decodeReply(testCase.bytes, expecting: .brightness)
+            XCTAssertEqual(reply.current, testCase.current, testCase.name)
+            XCTAssertEqual(reply.maximum, 100, testCase.name)
+            XCTAssertTrue(reply.checksumValid, testCase.name)
+        }
     }
 
     /// The exact reply that display sent back: brightness 75 of 100.
@@ -55,10 +85,23 @@ final class VCPCodecTests: XCTestCase {
         XCTAssertTrue(reply.checksumValid, "0x8B verifies only against seed 0x50, not 0x51")
     }
 
-    /// The null message a display sends when it cannot parse the request. Must not decode as data.
-    func testANullMessageIsNotMistakenForAReply() {
+    /// A null message must be reported as itself, not as corruption.
+    ///
+    /// The distinction is load-bearing: `nullMessage` is what tells `DDCCommandQueue` to try the other
+    /// frame shape. Reported as `badChecksum` — which it also technically is, since the buffer runs
+    /// past the three bytes the display sent — that recovery never happens.
+    func testANullMessageIsReportedAsItself() {
         let null: [UInt8] = [0x6E, 0x80, 0xBE, 0x6E, 0x80, 0xBE, 0x6E, 0x80, 0xBE, 0x6E, 0x80]
-        XCTAssertThrowsError(try VCPCodec.decodeReply(null, expecting: .brightness))
+        XCTAssertThrowsError(try VCPCodec.decodeReply(null, expecting: .brightness)) { error in
+            XCTAssertEqual(error as? VCPCodec.DecodeError, .nullMessage)
+        }
+        // Also when the caller has opted to tolerate bad checksums, which would otherwise skip past
+        // the check and misreport it as an unexpected opcode 0xBE.
+        XCTAssertThrowsError(
+            try VCPCodec.decodeReply(null, expecting: .brightness, tolerateChecksumMismatch: true)
+        ) { error in
+            XCTAssertEqual(error as? VCPCodec.DecodeError, .nullMessage)
+        }
     }
 
     // MARK: - Reply decoding

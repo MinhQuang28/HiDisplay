@@ -99,10 +99,23 @@ sends when DDC/CI is disabled in its OSD. Every plausible external cause was eli
 | A competing DDC client | no BetterDisplay/MonitorControl/Lunar running; HiDisplay itself quit — no change |
 | The cable path | DP upstream and downstream, no USB hub present |
 
-**Bug 1 — the host address was transmitted twice.** `IOAVServiceWriteI2C` takes the sub-address as an
-argument (0x51) and puts it on the bus itself. The codec also placed 0x51 at the head of the data
-buffer, so the display received `51 51 82 01 10 AC` and could not parse it. Dropping that one byte
-from the wire — while still checksumming it — was the whole fix.
+**Bug 1 — the frame shape was hard-coded, and it is not a constant.** `IOAVServiceWriteI2C` takes the
+sub-address as an argument (0x51); DDC/CI frames begin with the same byte. Whether the driver emits it
+itself depends on the link, so sending the frame whole is right in one DisplayPort mode and wrong in
+the other. Toggling only the monitor's own "DisplayPort 1.1" OSD setting flips the answer:
+
+| DP 1.1 | frame that gets a reply |
+| --- | --- |
+| on | `82 01 10 AC` — host address dropped |
+| off | `51 82 01 10 AC` — sent whole |
+
+The first fix shipped in 0.6.0 dropped the byte unconditionally, on evidence gathered entirely in the
+DP 1.1 mode. It worked, and then stopped the moment the user turned that setting off for a sharper
+picture. 0.6.1 sends one shape, and on a null message sends the other and adopts whichever answers.
+
+**Methodology note.** The measurement that first appeared to show the flip was invalid: the probe and
+the sweep were launched concurrently and both drove the same I2C bus, which is not shareable. Re-run
+alone it held. Never sweep the bus with anything else on it, including this app.
 
 **Bug 2 — the reply checksum seed was 0x51, not 0x50.** Latent behind bug 1: once real frames arrived,
 every one would have been thrown away as corrupt. 0x51 is the host address a display reads from, 0x50
@@ -110,15 +123,16 @@ the one it writes to, and replies are seeded with the latter.
 
 | Item | Result |
 | --- | --- |
-| Sweep: frame **with** leading 0x51, chip 0x37 / offset 0x51 | `6E 80 BE` — null |
-| Sweep: frame **with** leading 0x51, chip 0x37 / offset 0x00 | `6E 80 BE` — null |
-| Sweep: frame **without** leading 0x51, chip 0x37 / offset 0x51 | **`6E 88 02 00 10 00 00 64 00 4B 8B`** — real reply |
-| Sweep: frame **without** leading 0x51, chip 0x37 / offset 0x00 | `6E 80 BE` — null |
+| Sweep, DP 1.1 **on**: frame with leading 0x51, chip 0x37 / offset 0x51 | `6E 80 BE` — null |
+| Sweep, DP 1.1 **on**: frame without leading 0x51, chip 0x37 / offset 0x51 | **`6E 88 02 00 10 00 00 64 00 4B 8B`** |
+| Sweep, DP 1.1 **off**: frame with leading 0x51, chip 0x37 / offset 0x51 | **`6E 88 02 00 10 00 00 64 00 3A FA`** |
+| Sweep, DP 1.1 **off**: frame without leading 0x51, chip 0x37 / offset 0x51 | `6E 80 BE` — null |
+| Offset 0x00 (either shape, either mode) | `6E 80 BE` — null |
 | Chip address 0x6E (either shape) | `IOReturn -535740416`, no transfer |
-| Decoded reply | current 75, max 100, checksum valid against seed 0x50 |
-| `Set VCP 0x10 = 40`, then read back | **40** (was 75) — write and read both real |
-| Restored to 75 | confirmed by read-back |
-| Controller chosen | **`DDC`**, not gamma |
+| Decoded replies | 75/100 and 58/100, both checksum-valid against seed 0x50 |
+| `Set VCP 0x10 = 40`, read back (DP 1.1 on) | **40** (was 75) |
+| `Set VCP 0x10 = 45`, read back (DP 1.1 off) | **45** (was 58) — after shape learning |
+| Controller chosen | **`DDC`**, not gamma, in both modes |
 
 Both captured frames are now golden-value tests in `VCPCodecTests`, so a future refactor that shifts
 the frame fails in CI instead of on someone's desk.

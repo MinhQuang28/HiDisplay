@@ -22,7 +22,7 @@ fi
 
 APP_NAME="HiDisplay"
 BUNDLE_ID="com.hidisplay.app"
-VERSION="0.6.0"
+VERSION="0.6.1"
 MIN_MACOS="13.0"
 OUT="build/${APP_NAME}.app"
 
