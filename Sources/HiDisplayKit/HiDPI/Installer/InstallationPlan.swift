@@ -36,8 +36,20 @@ public struct InstallationPlan: Sendable {
     /// Copy-pasteable shell command that reverses this install, for the case where the app itself
     /// will not launch.
     public var recoveryCommand: String
+    /// The exact bytes this plan intends to write, after any merge with an existing file.
+    ///
+    /// Without this the merge was computed and thrown away: `plan()` recorded the hash of the merged
+    /// file while callers went on writing the *unmerged* `generated.data`, and nothing compared the
+    /// two. Anything that writes must take these bytes, not rebuild them.
+    public var payload: Data = Data()
     /// Top-level keys in an existing override that this app does not understand and will drop.
     public var droppedUnknownKeys: [String]
+    /// How many `scale-resolutions` entries the existing file holds that this install keeps.
+    ///
+    /// Zero when there is no existing file. Surfaced so the confirmation can state the number rather
+    /// than only "a file is already there" — a sentence that is equally true whether the install is
+    /// about to preserve 242 modes or destroy them.
+    public var carriedOverEntryCount: Int = 0
 
     public var isInstallable: Bool { validation.isInstallable }
 }
@@ -131,6 +143,7 @@ public struct OverrideInstaller {
         let existingData = fileManager.contents(atPath: target.path)
         var droppedKeys: [String] = []
         var mergedData = generated.data
+        var carriedOver = 0
 
         if let existingData,
            let (existingDocument, unknownKeys) = try? OverrideGenerator.parseExisting(existingData) {
@@ -139,15 +152,29 @@ public struct OverrideInstaller {
             case .merge:
                 // An override may already contain modes from another tool, or from an earlier install
                 // with different choices. Silently discarding them is the "not my file" failure.
-                if !existingDocument.preservedEntries.isEmpty || existingDocument.patchedEDID != nil {
-                    var document = try OverrideGenerator.parseExisting(generated.data).document
-                    document.preservedEntries = existingDocument.preservedEntries
-                    // The app never emits an EDID patch itself, so one found here was put there
-                    // deliberately by whoever wrote the file — which makes it exactly the kind of
-                    // content this policy exists to carry through.
-                    document.patchedEDID = existingDocument.patchedEDID
-                    mergedData = OverrideGenerator.generate(document).data
-                }
+                //
+                // This ran only when the existing file held entries this app *cannot* emit, which made
+                // the policy useless in the common case: a file written by another HiDPI tool decodes
+                // entirely into `scaleResolutions`, so `preservedEntries` is empty, the branch was
+                // skipped, and the whole file was overwritten. That is how a 242-entry override became
+                // a 6-entry one on a ViewSonic VX2780-2K — the user picked three sizes and lost every
+                // mode another tool had installed, with nothing in the confirmation to say so.
+                var document = try OverrideGenerator.parseExisting(generated.data).document
+
+                // Union, not replace: under this policy the selection *adds* to what is installed.
+                // Removing a mode is what `.replace` is for, and it says out loud what it discards.
+                var seen = Set(document.scaleResolutions.map(\.id))
+                document.scaleResolutions += existingDocument.scaleResolutions
+                    .filter { seen.insert($0.id).inserted }
+
+                document.preservedEntries = existingDocument.preservedEntries
+                // The app never emits an EDID patch itself, so one found here was put there
+                // deliberately by whoever wrote the file — which makes it exactly the kind of
+                // content this policy exists to carry through.
+                document.patchedEDID = existingDocument.patchedEDID
+                carriedOver = existingDocument.scaleResolutions.count
+                    + existingDocument.preservedEntries.count
+                mergedData = OverrideGenerator.generate(document).data
             case .replace:
                 // Caller asked for a clean slate. Report what is being discarded so the preview can
                 // say so out loud rather than quietly dropping 258 modes.
@@ -189,7 +216,9 @@ public struct OverrideInstaller {
             validation: generated.validation,
             requiresLogout: true,
             recoveryCommand: Self.recoveryCommand(for: manifest),
-            droppedUnknownKeys: droppedKeys)
+            payload: mergedData,
+            droppedUnknownKeys: droppedKeys,
+            carriedOverEntryCount: carriedOver)
     }
 
     // MARK: - Apply

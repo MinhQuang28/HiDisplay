@@ -450,3 +450,73 @@ final class AspectLockedEntryTests: XCTestCase {
         XCTAssertNil(ResolutionPresets.aspectCorrectResolution(forWidth: 1920, nativePixels: (0, 0)))
     }
 }
+
+/// Regression tests for the resolution picker's selection tag.
+///
+/// Observed on a ViewSonic VX2780-2K (170 Hz): after choosing 120 Hz the Resolution picker rendered
+/// as an empty box, and the next resolution change snapped the panel back to 170 Hz. One cause —
+/// tagging resolution rows with `DisplayMode.id`, which carries the refresh rate.
+final class ResolutionSelectionTests: XCTestCase {
+
+    private func mode(_ width: Int, _ height: Int, scale: Int = 2, refresh: Double) -> DisplayMode {
+        DisplayMode(
+            width: width, height: height,
+            pixelWidth: width * scale, pixelHeight: height * scale,
+            refreshRate: refresh)
+    }
+
+    /// The blank-picker bug: a curated row must stay selected at every rate that size offers.
+    func testTheCuratedRowForASizeMatchesThatSizeAtAnyRefreshRate() {
+        let all = [mode(2560, 1440, refresh: 170), mode(2560, 1440, refresh: 120)]
+        let curated = DisplayModeSwitcher.curated(from: all)
+        let at120 = all.first { $0.refreshRate == 120 }!
+
+        XCTAssertEqual(curated.count, 1)
+        XCTAssertEqual(curated[0].refreshRate, 170, "curation should keep the highest rate")
+        XCTAssertNotEqual(curated[0].id, at120.id, "ids differ — which is exactly why id is the wrong tag")
+        XCTAssertEqual(curated[0].sizeKey, at120.sizeKey, "but the size tag must still match")
+    }
+
+    /// The rate-reset bug: changing size keeps the chosen rate when the new size offers it.
+    func testChangingResolutionKeepsTheCurrentRefreshRate() {
+        let all = [
+            mode(2560, 1440, refresh: 170), mode(2560, 1440, refresh: 120),
+            mode(1920, 1080, refresh: 170), mode(1920, 1080, refresh: 120),
+        ]
+        let target = DisplayModeSwitcher.curated(from: all).first { $0.width == 1920 }!
+        XCTAssertEqual(target.refreshRate, 170, "the curated row is the 170 Hz one")
+
+        let resolved = DisplayModeSwitcher.mode(matchingSizeOf: target, preservingRate: 120, in: all)
+        XCTAssertEqual(resolved.width, 1920)
+        XCTAssertEqual(resolved.refreshRate, 120)
+    }
+
+    /// When the rate is unavailable at the new size, the curated pick wins — not the nearest number.
+    func testAnUnavailableRateFallsBackToTheCuratedPick() {
+        let all = [mode(2560, 1440, refresh: 120), mode(1920, 1080, refresh: 170), mode(1920, 1080, refresh: 60)]
+        let target = DisplayModeSwitcher.curated(from: all).first { $0.width == 1920 }!
+
+        let resolved = DisplayModeSwitcher.mode(matchingSizeOf: target, preservingRate: 120, in: all)
+        XCTAssertEqual(resolved.refreshRate, 170, "60 Hz is numerically closer to 120, and is the wrong answer")
+    }
+
+    /// A 1× and a HiDPI mode at the same logical size must not have their rates crossed over.
+    func testRateIsPreservedWithinTheSameSharpnessOnly() {
+        let all = [
+            mode(1920, 1080, scale: 2, refresh: 170),
+            mode(1920, 1080, scale: 1, refresh: 120), // same size, different sharpness
+        ]
+        let hiDPI = all[0]
+        let resolved = DisplayModeSwitcher.mode(matchingSizeOf: hiDPI, preservingRate: 120, in: all)
+        XCTAssertTrue(resolved.isHiDPI, "must not switch to the 1x mode just to hit 120 Hz")
+        XCTAssertEqual(resolved.refreshRate, 170)
+    }
+
+    /// Built-in panels report rate 0, which must not be treated as a rate to preserve.
+    func testAZeroRateDoesNotMatchAnything() {
+        let all = [mode(1920, 1080, refresh: 0), mode(1920, 1080, refresh: 120)]
+        let target = DisplayModeSwitcher.curated(from: all).first!
+        XCTAssertEqual(
+            DisplayModeSwitcher.mode(matchingSizeOf: target, preservingRate: 0, in: all).id, target.id)
+    }
+}

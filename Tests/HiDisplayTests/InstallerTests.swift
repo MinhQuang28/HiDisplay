@@ -382,6 +382,77 @@ final class ExistingContentPolicyTests: XCTestCase {
         XCTAssertGreaterThan(plan.actions.last!.byteCount, generated.data.count)
     }
 
+    /// Seeds the target with an override made entirely of entries this app *does* emit — the shape
+    /// another HiDPI tool writes, and the case the merge policy used to skip entirely.
+    private func seedNativeShapedOverride(relativePath: String, count: Int) throws -> [ScaledResolution] {
+        let resolutions = (1...count).map {
+            ScaledResolution(logicalWidth: 1000 + $0 * 16, logicalHeight: 600 + $0 * 9)
+        }
+        let data = OverrideGenerator.generate(
+            DisplayOverrideDocument(
+                vendorID: 0x10AC, productID: 0xD0A1, scaleResolutions: resolutions)).data
+
+        let target = root.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: target)
+        return resolutions
+    }
+
+    /// The VX2780-2K regression: installing three sizes over a 242-entry override written by another
+    /// tool wiped every one of them. `preservedEntries` was empty — the other tool's entries decoded
+    /// perfectly — so the merge branch never ran and the file was replaced wholesale.
+    func testMergeKeepsEntriesItCanDecode() throws {
+        let generated = makeGenerated()
+        let existing = try seedNativeShapedOverride(relativePath: generated.relativePath, count: 12)
+
+        let installer = OverrideInstaller(root: root, appVersion: "test")
+        let plan = try installer.plan(generated: generated, display: makeDisplay(), policy: .merge)
+
+        // Entries, not resolutions: each HiDPI size is stored alongside an 8-byte backing companion,
+        // so a 12-size file holds 24 entries. The confirmation counts what is in the file.
+        let seeded = try OverrideGenerator.parseExisting(
+            Data(contentsOf: root.appendingPathComponent(generated.relativePath))).document
+        XCTAssertEqual(seeded.scaleResolutions.count, existing.count * 2)
+        XCTAssertEqual(plan.carriedOverEntryCount, seeded.scaleResolutions.count,
+                       "the confirmation must be able to state how many modes are already installed")
+
+        // Decode the planned bytes rather than trusting a size comparison: the point is that every
+        // pre-existing size is still addressable, not merely that the file grew.
+        let (result, _) = try OverrideGenerator.parseExisting(plan.payload)
+
+        let ids = Set(result.scaleResolutions.map(\.id))
+        for resolution in existing {
+            XCTAssertTrue(ids.contains(resolution.id), "merge dropped \(resolution.id)")
+        }
+        XCTAssertTrue(ids.contains(ScaledResolution(logicalWidth: 1920, logicalHeight: 1080).id),
+                      "the newly selected size must be there too")
+    }
+
+    /// No existing file means nothing to carry over, and the confirmation must not claim otherwise.
+    func testCarriedOverCountIsZeroForAFreshInstall() throws {
+        let installer = OverrideInstaller(root: root, appVersion: "test")
+        let plan = try installer.plan(generated: makeGenerated(), display: makeDisplay(), policy: .merge)
+        XCTAssertEqual(plan.carriedOverEntryCount, 0)
+        XCTAssertEqual(plan.payload, makeGenerated().data, "nothing to merge means nothing to change")
+    }
+
+    /// The plan's own hash must describe its own payload. It did not: `plan()` hashed the merged file
+    /// and callers wrote the unmerged one, with nothing comparing them.
+    func testThePlanHashDescribesThePlanPayload() throws {
+        let generated = makeGenerated()
+        _ = try seedNativeShapedOverride(relativePath: generated.relativePath, count: 5)
+
+        let installer = OverrideInstaller(root: root, appVersion: "test")
+        let plan = try installer.plan(generated: generated, display: makeDisplay(), policy: .merge)
+        let action = plan.actions.last { $0.kind != .createDirectory }
+
+        XCTAssertEqual(action?.sha256After, SHA256Hash.hex(of: plan.payload))
+        XCTAssertEqual(action?.byteCount, plan.payload.count)
+        XCTAssertNotEqual(plan.payload, generated.data,
+                          "a merge that changes nothing would make this test vacuous")
+    }
+
     func testReplaceDiscardsForeignEntriesAndSaysSo() throws {
         let generated = makeGenerated()
         let foreignCount = try seedForeignOverride(relativePath: generated.relativePath)

@@ -14,8 +14,16 @@ public enum DDC {
     public static let dataOffset: UInt32 = 0x51
     /// Destination address used as the checksum seed for host→display frames.
     public static let displayAddress: UInt8 = 0x6E
-    /// Host source address; also the checksum seed for display→host replies.
+    /// Host source address — the first byte of every host→display frame, and the same value as
+    /// `dataOffset` because that byte *is* the I2C sub-address.
     public static let hostAddress: UInt8 = 0x51
+    /// Checksum seed for display→host replies.
+    ///
+    /// 0x50, not `hostAddress`. The two differ by the I2C read/write bit: 0x51 is the host address a
+    /// display reads from, 0x50 the one it writes to, and a reply's checksum is seeded with the
+    /// latter. Using 0x51 here rejects every well-formed reply as corrupt — verified against a real
+    /// frame, `6E 88 02 00 10 00 00 64 00 4B 8B`, whose bytes XOR to 0xDB: 0xDB ^ 0x8B is 0x50.
+    public static let replyChecksumSeed: UInt8 = 0x50
     /// MCCS asks for ~40 ms between a request and its reply. Some panels need more; this is the floor.
     public static let replyDelay: Duration = .milliseconds(50)
     /// Minimum spacing between consecutive writes. 40 ms ≈ 25 writes/s, inside the 10–20/s target
@@ -35,25 +43,38 @@ public enum VCPCodec {
         bytes.reduce(seed) { $0 ^ $1 }
     }
 
+    /// Turns a complete DDC/CI frame into the bytes that actually go on the wire.
+    ///
+    /// The leading host-address byte is checksummed but **not transmitted**: `IOAVServiceWriteI2C`
+    /// takes the sub-address as its own argument (`DDC.dataOffset`, the identical 0x51) and puts it on
+    /// the bus itself. Sending it again makes the display see `51 51 82 …`, and a display that cannot
+    /// parse a request answers with a null message — indistinguishable, from the outside, from DDC/CI
+    /// being switched off in its OSD.
+    ///
+    /// Found by sweeping both shapes against a ViewSonic VX2780-2K. One byte apart: the frame with the
+    /// leading 0x51 got `6E 80 BE` at every timing and address tried, the frame without it got
+    /// `6E 88 02 00 10 00 00 64 00 4B 8B` on the first attempt. See `Tests/HardwareMatrix/results.md`.
+    private static func wireBytes(_ frame: [UInt8]) -> [UInt8] {
+        Array(frame.dropFirst()) + [checksum(seed: DDC.displayAddress, bytes: frame)]
+    }
+
     /// `Set VCP Feature` frame.
     ///
     /// ```
     /// 51 84 03 <code> <value hi> <value lo> <checksum>
     /// │  │  └─ Set VCP Feature opcode
     /// │  └──── 0x80 | payload length (4)
-    /// └─────── host source address
+    /// └─────── host source address — checksummed, but carried by the I2C sub-address
     /// ```
     public static func setRequest(code: VCPCode, value: UInt16) -> [UInt8] {
-        var frame: [UInt8] = [
+        wireBytes([
             DDC.hostAddress,
             0x80 | 4,
             0x03,
             code.rawValue,
             UInt8(truncatingIfNeeded: value >> 8),
             UInt8(truncatingIfNeeded: value),
-        ]
-        frame.append(checksum(seed: DDC.displayAddress, bytes: frame))
-        return frame
+        ])
     }
 
     /// `Get VCP Feature` request frame.
@@ -62,14 +83,12 @@ public enum VCPCodec {
     /// 51 82 01 <code> <checksum>
     /// ```
     public static func getRequest(code: VCPCode) -> [UInt8] {
-        var frame: [UInt8] = [
+        wireBytes([
             DDC.hostAddress,
             0x80 | 2,
             0x01,
             code.rawValue,
-        ]
-        frame.append(checksum(seed: DDC.displayAddress, bytes: frame))
-        return frame
+        ])
     }
 
     /// Length of the `Get VCP Feature Reply` frame.
@@ -125,8 +144,9 @@ public enum VCPCodec {
     ) throws -> Reply {
         guard bytes.count >= replyLength else { throw DecodeError.shortFrame(got: bytes.count) }
 
-        // The checksum covers everything but the final byte, seeded with the host address.
-        let computed = checksum(seed: DDC.hostAddress, bytes: Array(bytes[0..<(replyLength - 1)]))
+        // The checksum covers everything but the final byte. Unlike a request, the reply is
+        // transmitted whole — the display's address is really there in byte 0 — so nothing is dropped.
+        let computed = checksum(seed: DDC.replyChecksumSeed, bytes: Array(bytes[0..<(replyLength - 1)]))
         let checksumValid = computed == bytes[replyLength - 1]
         if !checksumValid, !tolerateChecksumMismatch {
             throw DecodeError.badChecksum

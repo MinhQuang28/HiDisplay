@@ -94,16 +94,24 @@ struct DisplaySection: View {
     @ViewBuilder
     private var resolutionPicker: some View {
         if !display.isBuiltIn, curatedModes.count > 1 {
+            // Tagged by size, not by `mode.id`: the curated row for a size carries the highest
+            // refresh rate, so an id tag would both blank the picker at any other rate and reset the
+            // rate on every change. The refresh rate itself is only selectable in Settings, which is
+            // all the more reason not to silently overwrite it from here.
             Picker("Resolution", selection: Binding(
-                get: { display.currentMode.map { "\($0.width)x\($0.height)" } ?? "" },
+                get: { display.currentMode?.sizeKey ?? "" },
                 set: { key in
-                    guard let mode = curatedModes.first(where: { "\($0.width)x\($0.height)" == key })
-                    else { return }
-                    model.setMode(mode, for: display)
+                    guard let target = curatedModes.first(where: { $0.sizeKey == key }) else { return }
+                    model.setMode(
+                        DisplayModeSwitcher.mode(
+                            matchingSizeOf: target,
+                            preservingRate: display.currentMode?.refreshRate ?? 0,
+                            in: display.availableModes),
+                        for: display)
                 })
             ) {
                 ForEach(curatedModes) { mode in
-                    Text(mode.displayLabel).tag("\(mode.width)x\(mode.height)")
+                    Text(mode.displayLabel).tag(mode.sizeKey)
                 }
             }
             .pickerStyle(.menu)

@@ -16,6 +16,8 @@ final class BrightnessOSD {
 
     /// Matches the system HUD's dwell time closely enough to feel native.
     private static let visibleDuration: TimeInterval = 1.2
+    /// The system HUD fades rather than vanishing. Appearing is instant, so only the exit is animated.
+    private static let fadeDuration: TimeInterval = 0.25
     private static let size = CGSize(width: 200, height: 200)
 
     private var panel: NSPanel?
@@ -25,11 +27,17 @@ final class BrightnessOSD {
     /// Shows the indicator on `display`, or moves it there if already visible.
     func show(value: Float, display: DisplayDevice) {
         model.value = min(max(value, 0), 1)
-        model.displayName = display.name
 
         let panel = panel ?? makePanel()
         self.panel = panel
-        position(panel, on: display)
+        // The name is redundant when the HUD is sitting on the display it describes, which is the whole
+        // point of positioning it there — so it is shown only when that failed and the panel landed
+        // somewhere else. See `OSDView`.
+        model.displayName = position(panel, on: display) ? nil : display.name
+
+        // Cancel any fade still in flight, or a press during the fade-out would leave the panel
+        // half-transparent for the rest of its life.
+        panel.alphaValue = 1
         panel.orderFrontRegardless()
 
         // Re-arm rather than stack: holding the key down should keep one indicator alive, not queue a
@@ -45,7 +53,19 @@ final class BrightnessOSD {
     func hide() {
         hideWorkItem?.cancel()
         hideWorkItem = nil
-        panel?.orderOut(nil)
+        guard let panel, panel.isVisible else { return }
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Self.fadeDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().alphaValue = 0
+        } completionHandler: { [weak panel] in
+            // Only withdraw if nothing re-showed it mid-fade; `show` resets alpha to 1.
+            MainActor.assumeIsolated {
+                guard let panel, panel.alphaValue == 0 else { return }
+                panel.orderOut(nil)
+            }
+        }
     }
 
     // MARK: - Panel
@@ -75,13 +95,17 @@ final class BrightnessOSD {
     /// `DisplayDevice.frame` is in CoreGraphics' top-left-origin space while `NSPanel` wants AppKit's
     /// bottom-left-origin space, so converting by hand would be an easy off-by-a-screen-height bug on a
     /// multi-monitor desk. Looking the display up in `NSScreen.screens` avoids the conversion entirely.
-    private func position(_ panel: NSPanel, on display: DisplayDevice) {
-        let frame = screenFrame(for: display.cgDisplayID) ?? NSScreen.main?.frame ?? .zero
+    /// - Returns: whether the panel actually landed on `display`, rather than on a fallback screen.
+    @discardableResult
+    private func position(_ panel: NSPanel, on display: DisplayDevice) -> Bool {
+        let matched = screenFrame(for: display.cgDisplayID)
+        let frame = matched ?? NSScreen.main?.frame ?? .zero
         let origin = CGPoint(
             x: frame.midX - Self.size.width / 2,
             // Roughly where the system HUD sits, so the two never feel like different apps.
             y: frame.minY + 140)
         panel.setFrame(CGRect(origin: origin, size: Self.size), display: false)
+        return matched != nil
     }
 
     private func screenFrame(for displayID: CGDirectDisplayID) -> CGRect? {
@@ -96,47 +120,80 @@ final class BrightnessOSD {
 @MainActor
 private final class OSDModel: ObservableObject {
     @Published var value: Float = 1
-    @Published var displayName: String = ""
+    /// Set only when the panel could not be placed on the display it describes.
+    @Published var displayName: String?
 }
 
+/// Laid out against the system HUD's own proportions rather than by eye.
+///
+/// The numbers below are the ones AppKit's HUD uses: a 200 pt square with an 18 pt continuous corner,
+/// the glyph optically centred in the upper portion, and a 16-segment bar 150 pt wide sitting 30 pt off
+/// the bottom. Guessing at these is what makes a look-alike read as "almost, but not quite" — the icon
+/// being too large and the bar too tall are exactly what gave the first version away.
 private struct OSDView: View {
 
     @ObservedObject var model: OSDModel
 
-    /// The system HUD uses sixteen segments; matching it makes a key press land on exactly one segment.
+    /// Sixteen, so one key press moves exactly one segment — the system uses the same count for the
+    /// same reason.
     private static let segments = 16
+    private static let segmentWidth: CGFloat = 7
+    private static let segmentHeight: CGFloat = 6
+    private static let segmentGap: CGFloat = 2.5
 
     private var filledSegments: Int {
         Int((model.value * Float(Self.segments)).rounded())
     }
 
-    var body: some View {
-        VStack(spacing: 18) {
-            Image(systemName: "sun.max.fill")
-                .font(.system(size: 64, weight: .regular))
-                .foregroundStyle(.primary)
+    private var indicator: some View {
+        HStack(spacing: Self.segmentGap) {
+            ForEach(0..<Self.segments, id: \.self) { index in
+                // Each segment is rounded on its own. Clipping the row as a whole — the previous
+                // approach — rounds only the two outermost corners, which reads as a progress bar
+                // rather than the system's row of discrete ticks.
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(.white.opacity(index < filledSegments ? 0.95 : 0.25))
+                    .frame(width: Self.segmentWidth, height: Self.segmentHeight)
+            }
+        }
+    }
 
-            HStack(spacing: 2) {
-                ForEach(0..<Self.segments, id: \.self) { index in
-                    Rectangle()
-                        .fill(index < filledSegments ? Color.primary : Color.primary.opacity(0.22))
-                        .frame(height: 8)
+    var body: some View {
+        ZStack {
+            // Optically centred, not geometrically: the bar below pulls the composition down, so the
+            // glyph sits slightly above the midpoint to compensate.
+            Image(systemName: "sun.max.fill")
+                .font(.system(size: 74, weight: .regular))
+                .foregroundStyle(.white)
+                .offset(y: -18)
+
+            VStack(spacing: 6) {
+                Spacer(minLength: 0)
+                indicator
+
+                // Normally absent. The HUD appears on the display it is describing, which says which
+                // display far better than a caption does; the name is a fallback for the one case
+                // where positioning fell through to another screen.
+                if let name = model.displayName {
+                    Text(name)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(width: 160)
                 }
             }
-            .frame(width: 140)
-            .clipShape(RoundedRectangle(cornerRadius: 2))
-
-            // Which display this applies to — the whole point of the HUD when several are attached.
-            Text(model.displayName)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .frame(width: 160)
+            .padding(.bottom, 30)
         }
         .frame(width: 200, height: 200)
         .background(
             VisualEffectBackground()
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous)))
+        // A hairline the material does not provide on its own. Without it the panel's edge dissolves
+        // into a light wallpaper and the square loses its shape.
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
     }
 }
 
@@ -147,6 +204,9 @@ private struct VisualEffectBackground: NSViewRepresentable {
         view.material = .hudWindow
         view.blendingMode = .behindWindow
         view.state = .active
+        // The system HUD is dark whatever the desktop appearance. Inheriting the app's appearance
+        // instead gives a pale panel in Light Mode that no other part of macOS looks like.
+        view.appearance = NSAppearance(named: .vibrantDark)
         return view
     }
 

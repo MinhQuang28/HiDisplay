@@ -452,6 +452,13 @@ struct HiDPISettingsTab: View {
             if action.kind == .replaceFile {
                 parts.append("A file is already there. It is copied into a recovery package in your "
                     + "Downloads folder before anything is replaced.")
+                // The count, not just the fact. "A file is already there" reads the same whether the
+                // install keeps 242 modes or throws them away, and that ambiguity has already cost
+                // one user their whole HiDPI setup.
+                if plan.carriedOverEntryCount > 0 {
+                    parts.append("It holds \(plan.carriedOverEntryCount) mode entries. "
+                        + "Your selection is added to them; none are removed.")
+                }
             }
         }
         if !plan.droppedUnknownKeys.isEmpty {
@@ -468,7 +475,7 @@ struct HiDPISettingsTab: View {
         guard let pending = pendingInstall else { return }
         pendingInstall = nil
 
-        switch model.performInstall(pending.plan, payload: pending.generated) {
+        switch model.performInstall(pending.plan) {
         case .installed(let package, let requiresLogout):
             recoveryPackagePath = package.path
             exportMessage = """
@@ -503,10 +510,11 @@ struct HiDPISettingsTab: View {
             let installer = OverrideInstaller(
                 root: URL(fileURLWithPath: OverridePaths.systemOverrideRoot),
                 appVersion: AppModel.version)
-            // Same policy as Install, because the staged file below *is* `generated.data`: under the
-            // merge policy the manifest would record the hash of a merged file that this folder does
-            // not contain, and restore.command would then refuse the very file it shipped with.
-            let plan = try installer.plan(generated: generated, display: display, policy: .replace)
+            // Merge, matching Install. This used to be `.replace`, because the staged file was written
+            // from `generated.data` while the manifest recorded the hash of the merged file — so the
+            // folder shipped a file its own restore.command would reject. The plan now carries the
+            // bytes it planned, and staging those makes the two agree under either policy.
+            let plan = try installer.plan(generated: generated, display: display, policy: .merge)
 
             let package = try RecoveryPackageBuilder.create(manifest: plan.manifest, in: downloads)
 
@@ -520,7 +528,7 @@ struct HiDPISettingsTab: View {
             try FileManager.default.createDirectory(at: stagedDirectory, withIntermediateDirectories: true)
             let stagedFile = stagedDirectory.appendingPathComponent(
                 OverridePaths.productFileName(productID: display.identity.productID))
-            try generated.data.write(to: stagedFile, options: .atomic)
+            try plan.payload.write(to: stagedFile, options: .atomic)
 
             exportMessage = """
                 Wrote \(package.directory.lastPathComponent) to Downloads.

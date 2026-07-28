@@ -88,7 +88,7 @@ public enum DisplayModeSwitcher {
     public static func curated(from modes: [DisplayMode]) -> [DisplayMode] {
         var best: [String: DisplayMode] = [:]
         for mode in modes where mode.isUsableForDesktop {
-            let key = "\(mode.width)x\(mode.height)"
+            let key = mode.sizeKey
             guard let existing = best[key] else {
                 best[key] = mode
                 continue
@@ -120,5 +120,24 @@ public enum DisplayModeSwitcher {
             // must not be offered as a choice alongside real rates.
             .filter { $0.refreshRate > 0 }
             .sorted { $0.refreshRate > $1.refreshRate }
+    }
+
+    /// `target`'s size, kept at `rate` if that size offers it.
+    ///
+    /// Resolution rows come from `curated`, which picks the *highest* rate at each size. Switching to
+    /// such a row directly is what silently pushed a display the user had set to 120 Hz back up to
+    /// 170 Hz on every resolution change.
+    ///
+    /// Falls back to `target` rather than to the numerically nearest rate: if the requested rate is
+    /// gone, the curated pick (highest available) is a better answer than, say, dropping 120 Hz to
+    /// 60 Hz because 60 happens to be closer than 170.
+    public static func mode(
+        matchingSizeOf target: DisplayMode, preservingRate rate: Double, in modes: [DisplayMode]
+    ) -> DisplayMode {
+        guard rate > 0 else { return target }
+        let wanted = Int(rate.rounded())
+        let candidates = refreshRates(
+            forWidth: target.width, height: target.height, hiDPI: target.isHiDPI, in: modes)
+        return candidates.first { Int($0.refreshRate.rounded()) == wanted } ?? target
     }
 }

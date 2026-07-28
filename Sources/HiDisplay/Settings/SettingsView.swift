@@ -124,8 +124,8 @@ struct DisplaysSettingsTab: View {
                 }
                 .labelsHidden()
             } else {
-                Picker("", selection: modeBinding(display)) {
-                    ForEach(curated) { mode in Text(mode.displayLabel).tag(mode.id) }
+                Picker("", selection: sizeBinding(display)) {
+                    ForEach(curated) { mode in Text(mode.displayLabel).tag(mode.sizeKey) }
                 }
                 .labelsHidden()
 
@@ -154,11 +154,32 @@ struct DisplaysSettingsTab: View {
 
     /// Selection is by `DisplayMode.id`, which encodes geometry and refresh rate — the runtime
     /// `ioDisplayModeID` is not stable across reconnects and cannot be used as a tag.
+    ///
+    /// Correct for the refresh-rate picker, whose rows are all one size and differ only in rate. The
+    /// resolution picker must use `sizeBinding` instead.
     private func modeBinding(_ display: DisplayDevice) -> Binding<String> {
         Binding(
             get: { display.currentMode?.id ?? "" },
             set: { id in
                 guard let mode = display.availableModes.first(where: { $0.id == id }) else { return }
+                model.setMode(mode, for: display)
+            })
+    }
+
+    /// Resolution selection, by size only.
+    ///
+    /// Both halves matter. The getter tags by size so a 120 Hz current mode still matches the curated
+    /// 170 Hz row instead of leaving the picker blank; the setter re-resolves the rate so switching
+    /// size keeps 120 Hz whenever the new size offers it.
+    private func sizeBinding(_ display: DisplayDevice) -> Binding<String> {
+        Binding(
+            get: { display.currentMode?.sizeKey ?? "" },
+            set: { key in
+                guard let target = display.curatedModes.first(where: { $0.sizeKey == key }) else { return }
+                let mode = DisplayModeSwitcher.mode(
+                    matchingSizeOf: target,
+                    preservingRate: display.currentMode?.refreshRate ?? 0,
+                    in: display.availableModes)
                 model.setMode(mode, for: display)
             })
     }

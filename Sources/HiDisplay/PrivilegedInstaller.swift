@@ -32,6 +32,9 @@ enum PrivilegedInstaller {
         case unsafePath(String)
         case authorizationFailed(String)
         case verificationFailed(expected: String, got: String)
+        /// The bytes handed to `install` are not the ones the plan described. Caught before the
+        /// privileged step, so nothing has run as root when this is thrown.
+        case payloadMismatch(expected: String, got: String)
         case cancelled
 
         var errorDescription: String? {
@@ -44,6 +47,9 @@ enum PrivilegedInstaller {
                 return "The installed file does not match what was previewed "
                     + "(expected \(expected.prefix(12))…, got \(got.prefix(12))…). Nothing was trusted; "
                     + "check the recovery package before restarting."
+            case .payloadMismatch(let expected, let got):
+                return "Refusing to install: the file to write does not match the one you were shown "
+                    + "(expected \(expected.prefix(12))…, got \(got.prefix(12))…). Nothing was changed."
             case .cancelled:
                 return "Authorization was cancelled."
             }
@@ -72,6 +78,14 @@ enum PrivilegedInstaller {
     static func install(plan: InstallationPlan, payload: Data) throws -> String {
         guard let action = plan.actions.last(where: { $0.kind != .createDirectory }) else {
             throw InstallError.unsafePath("plan has no file to write")
+        }
+
+        // The plan told the user what would land, down to a hash. Writing anything else makes that
+        // preview a lie — and it silently did, for as long as callers passed their own copy of the
+        // generated file instead of the merged bytes the plan had computed.
+        let hash = SHA256Hash.hex(of: payload)
+        guard hash == action.sha256After else {
+            throw InstallError.payloadMismatch(expected: action.sha256After ?? "", got: hash)
         }
 
         // Prove the destination is inside the override root before anything else happens.

@@ -11,7 +11,7 @@ import SwiftUI
 @MainActor
 final class AppModel: ObservableObject {
 
-    static let version = "0.5.0"
+    static let version = "0.6.0"
     /// One instance for the process. `AppDelegate` needs to reach the same object the scene shows in
     /// order to tear down shade windows and flush profiles on quit.
     static let shared = AppModel()
@@ -332,7 +332,10 @@ final class AppModel: ObservableObject {
     ///
     /// The recovery package is created **before** the privileged write, not after: if the write goes
     /// wrong, the way back has to already exist.
-    func performInstall(_ plan: InstallationPlan, payload: GeneratedOverride) -> InstallOutcome {
+    /// - Note: the bytes written come from `plan.payload`, not from any `GeneratedOverride` the caller
+    ///   still has to hand. Those two differ whenever an override is already installed, and writing
+    ///   the caller's copy is what silently discarded another tool's modes.
+    func performInstall(_ plan: InstallationPlan) -> InstallOutcome {
         guard plan.isInstallable else {
             return .failed(plan.validation.errors.map(\.message).joined(separator: "\n"))
         }
@@ -351,7 +354,7 @@ final class AppModel: ObservableObject {
             }
 
             do {
-                try PrivilegedInstaller.install(plan: plan, payload: payload.data)
+                try PrivilegedInstaller.install(plan: plan, payload: plan.payload)
             } catch PrivilegedInstaller.InstallError.cancelled {
                 // Cancelling happens before anything runs as root, so nothing on the system changed.
                 // Leaving a recovery package behind would contradict the message the UI then shows —

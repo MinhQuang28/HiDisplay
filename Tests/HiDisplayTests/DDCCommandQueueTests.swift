@@ -40,9 +40,9 @@ final class DDCCommandQueueTests: XCTestCase {
         // Every recorded frame must be a complete, well-formed set request. Interleaved writes would
         // corrupt framing, so this also proves nothing overlapped.
         for frame in transport.recordedWrites {
-            XCTAssertEqual(frame.count, 7)
-            XCTAssertEqual(frame[2], 0x03)
-            XCTAssertEqual(frame[6], frame[0..<6].reduce(DDC.displayAddress) { $0 ^ $1 })
+            XCTAssertEqual(frame.count, 6, "wire frame: the host address is carried by the sub-address")
+            XCTAssertEqual(frame[1], 0x03)
+            XCTAssertEqual(frame[5], frame[0..<5].reduce(DDC.displayAddress ^ DDC.hostAddress) { $0 ^ $1 })
         }
         XCTAssertEqual(transport.recordedBrightnessValues.last, 100)
     }
@@ -76,7 +76,7 @@ final class DDCCommandQueueTests: XCTestCase {
 
     func testReadSucceedsAndDecodesTheReply() async throws {
         var frame: [UInt8] = [0x6E, 0x88, 0x02, 0x00, 0x10, 0x00, 0x00, 0x64, 0x00, 0x2A]
-        frame.append(frame.reduce(DDC.hostAddress) { $0 ^ $1 })
+        frame.append(frame.reduce(DDC.replyChecksumSeed) { $0 ^ $1 })
 
         let transport = FakeDDCTransport(replies: [frame])
         let queue = DDCCommandQueue(transport: transport, label: "test")

@@ -70,7 +70,7 @@ Set brightness:
 │  │  │  └─ VCP 0x10 = brightness
 │  │  └──── 0x03 Set VCP Feature
 │  └─────── 0x80 | payload length 4
-└────────── host source address
+└────────── host source address — checksummed, NOT transmitted (see below)
 checksum = XOR of all preceding bytes, seeded with 0x6E
 ```
 
@@ -85,8 +85,41 @@ Reply, 11 bytes:
 ```
 6E 88 02 <result> 10 <type> <max hi> <max lo> <cur hi> <cur lo> <checksum>
  0  1  2     3     4    5       6        7        8        9        10
-checksum seeded with 0x51
+checksum seeded with 0x50
 ```
+
+### The host address is checksummed but not sent
+
+The single most expensive detail in this file. `IOAVServiceWriteI2C(service, 0x37, 0x51, data, len)`
+takes the sub-address as its third argument and puts that byte on the bus itself. The frames above
+*begin* with the same 0x51, because the checksum covers it — but including it in `data` makes the
+display receive `51 51 82 01 10 AC`, which it cannot parse.
+
+So the wire bytes are the frame minus its first byte:
+
+```
+frame:  51 82 01 10 AC        <- what the checksum is computed over
+wire:      82 01 10 AC        <- what IOAVServiceWriteI2C is given
+```
+
+A display that cannot parse a request replies with a **null message**, `6E 80 BE`. That is a
+well-formed frame with a correct checksum, and it is also what a display sends when DDC/CI is switched
+off in its OSD — so a framing bug and a disabled monitor are indistinguishable from the outside. On a
+ViewSonic VX2780-2K this cost a full debugging session: OSD toggled, competing apps quit, timing swept
+50–200 ms, read lengths 11 and 12, chip 0x37/0x6E, offsets 0x51/0x00 — every combination null, until
+the leading byte was dropped and the very first attempt returned
+`6E 88 02 00 10 00 00 64 00 4B 8B`.
+
+Reach for `hidisplay-probe --ddc-sweep` before believing a monitor is at fault. It tries both frame
+shapes across several chip addresses and offsets and prints raw bytes, decoding nothing.
+
+### Reply checksum seed is 0x50, not 0x51
+
+0x51 is the host address a display *reads from*; 0x50 is the one it *writes to*, and a reply is seeded
+with the latter. Seeding with 0x51 rejects every well-formed reply as corrupt. Verify against the real
+capture above: those ten bytes XOR to 0xDB, and 0xDB ^ 0x8B = 0x50.
+
+This bug sat latent behind the framing one — no reply ever arrived to be mis-verified.
 
 MCCS asks for ~40 ms between request and reply; the code uses 50 ms as a floor and some panels need more.
 
@@ -137,8 +170,13 @@ adapters, KVMs and virtual displays.
 
 Identical immediate failure across all four combinations, in both directions, is the distinguishing
 signature. A wrong chip address and a wrong offset would fail *differently*; a sleeping monitor would
-time out rather than reject; a framing error would produce a reply that fails to decode. So this pattern
-means the path, not the app.
+time out rather than reject. So this pattern means the path, not the app.
+
+This section used to add "a framing error would produce a reply that fails to decode". That was wrong,
+and believing it wasted a debugging session on the VX2780-2K. A framing error produces a **null
+message** — a perfectly well-formed frame with a valid checksum that decodes cleanly and simply
+carries no data. It is not distinguishable from a monitor with DDC/CI switched off. `6E 80 BE` means
+*the display did not understand the request*, and the request is a thing this app controls.
 
 ## Known hardware behaviour to expect
 

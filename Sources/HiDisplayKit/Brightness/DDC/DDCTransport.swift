@@ -120,9 +120,11 @@ public final class FakeDDCTransport: DDCTransport, @unchecked Sendable {
     public var recordedBrightnessValues: [UInt16] {
         lock.withLock {
             recordedWrites.compactMap { frame in
-                guard frame.count >= 6, frame[2] == 0x03, frame[3] == VCPCode.brightness.rawValue
+                // Wire offsets: the host-address byte is carried by the I2C sub-address, so the
+                // opcode is byte 1 rather than byte 2.
+                guard frame.count >= 5, frame[1] == 0x03, frame[2] == VCPCode.brightness.rawValue
                 else { return nil }
-                return UInt16(frame[4]) << 8 | UInt16(frame[5])
+                return UInt16(frame[3]) << 8 | UInt16(frame[4])
             }
         }
     }

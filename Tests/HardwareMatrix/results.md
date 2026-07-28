@@ -75,14 +75,60 @@ dock, not a monitor exposing its scaler.
 
 The app behaves correctly: it reports the reason in plain language and falls back to gamma dimming.
 
-### Still not verified — needs a monitor with a working DDC path
+## Second external display — ViewSonic VX2780-2K
+
+Same Mac and macOS, lid closed (the built-in panel does not enumerate). Vendor `0x5A63`, product
+`0x003F`, serial `0x01010101`, native 2560 × 1440, 170 Hz, 1284 modes / 747 HiDPI. The 747 come from a
+**third-party** override already present at `DisplayVendorID-5a63/DisplayProductID-3f` (242 entries,
+dated before this project touched the machine) — not from HiDisplay, and not evidence its generator
+works on a second panel.
+
+### DDC: works, after two framing bugs
+
+The first hardware to complete a real DDC transaction. `Transport = {Upstream=DP, Downstream=DP}`,
+direct cable, no hub. Getting here took a wire-format sweep, because both bugs presented as a display
+that answers `6E 80 BE` — a spec-compliant **null message**, which is also exactly what a display
+sends when DDC/CI is disabled in its OSD. Every plausible external cause was eliminated first:
+
+| Ruled out | How |
+| --- | --- |
+| Wrong AV service node | exactly 1 `DCPAVServiceProxy`, `Location = External` |
+| Reply timing | delay swept 50 / 100 / 200 ms, 4 consecutive reads per write — null 12/12 |
+| Read length | 11 vs 12 bytes identical; the 3 bytes simply repeat |
+| DDC/CI off in the OSD | user switched it On — no change |
+| A competing DDC client | no BetterDisplay/MonitorControl/Lunar running; HiDisplay itself quit — no change |
+| The cable path | DP upstream and downstream, no USB hub present |
+
+**Bug 1 — the host address was transmitted twice.** `IOAVServiceWriteI2C` takes the sub-address as an
+argument (0x51) and puts it on the bus itself. The codec also placed 0x51 at the head of the data
+buffer, so the display received `51 51 82 01 10 AC` and could not parse it. Dropping that one byte
+from the wire — while still checksumming it — was the whole fix.
+
+**Bug 2 — the reply checksum seed was 0x51, not 0x50.** Latent behind bug 1: once real frames arrived,
+every one would have been thrown away as corrupt. 0x51 is the host address a display reads from, 0x50
+the one it writes to, and replies are seeded with the latter.
+
+| Item | Result |
+| --- | --- |
+| Sweep: frame **with** leading 0x51, chip 0x37 / offset 0x51 | `6E 80 BE` — null |
+| Sweep: frame **with** leading 0x51, chip 0x37 / offset 0x00 | `6E 80 BE` — null |
+| Sweep: frame **without** leading 0x51, chip 0x37 / offset 0x51 | **`6E 88 02 00 10 00 00 64 00 4B 8B`** — real reply |
+| Sweep: frame **without** leading 0x51, chip 0x37 / offset 0x00 | `6E 80 BE` — null |
+| Chip address 0x6E (either shape) | `IOReturn -535740416`, no transfer |
+| Decoded reply | current 75, max 100, checksum valid against seed 0x50 |
+| `Set VCP 0x10 = 40`, then read back | **40** (was 75) — write and read both real |
+| Restored to 75 | confirmed by read-back |
+| Controller chosen | **`DDC`**, not gamma |
+
+Both captured frames are now golden-value tests in `VCPCodecTests`, so a future refactor that shifts
+the frame fails in CI instead of on someone's desk.
+
+### Still not verified
 
 | Item | Why |
 | --- | --- |
-| A DDC read that returns real data | the only external display available has no I2C channel |
-| A DDC write changing actual backlight | same |
-| The 11-byte reply layout against real monitor bytes | same — **the framing remains unproven** |
-| Monitor ranges other than 0–100 | same |
+| Monitor ranges other than 0–100 | both this display's max is 100; a 0–255 or 0–64 panel is untested |
+| DDC on a display behind a hub or dock | this one is a direct DP link |
 | Two-identical-monitor ambiguity refusal on real hardware | needs two matching monitors |
 | Installing a generated override and seeing the mode appear | needs a restart |
 | Refresh rate / HDR retention after an override | same |

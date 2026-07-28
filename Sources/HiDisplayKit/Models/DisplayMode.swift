@@ -19,6 +19,15 @@ public struct DisplayMode: Hashable, Codable, Sendable, Identifiable {
         "\(width)x\(height)@\(pixelWidth)x\(pixelHeight)@\(Int(refreshRate.rounded()))"
     }
 
+    /// Identifies the *size* alone, with the refresh rate deliberately left out.
+    ///
+    /// A resolution picker must tag its rows with this rather than `id`. Tagging with `id` binds the
+    /// selected row to one particular refresh rate, so choosing 120 Hz on a panel whose curated entry
+    /// is 170 Hz leaves the picker with a selection matching none of its rows — which AppKit renders
+    /// as an empty box. Matches the key `DisplayModeSwitcher.curated(from:)` groups by, so every
+    /// curated row has a distinct one.
+    public var sizeKey: String { "\(width)x\(height)" }
+
     public init(
         width: Int,
         height: Int,
