@@ -96,10 +96,26 @@ public final class AppleSiliconAVServiceTransport: DDCTransport, @unchecked Send
     ///
     /// More than one result means two attached monitors are genuinely indistinguishable from their
     /// registry records, which is the case the caller must refuse rather than resolve.
-    static func unitTokens(matching identity: DisplayIdentity) -> [String] {
+    ///
+    /// Public so `hidisplay-probe` resolves sweep targets with the same matching rules the app uses,
+    /// instead of grabbing whichever external AV service the registry lists first.
+    ///
+    /// Scans the same ordered candidate classes as `AppleSiliconDisplayMetadataBackend`: the node
+    /// carrying `DisplayAttributes` has moved between macOS releases (on macOS 26 it is `AppleCLCD2`;
+    /// community documentation for earlier releases puts it on `DCPAVServiceProxy`), and a transport
+    /// hard-coded to one class would silently disable DDC on the releases using the other.
+    public static func unitTokens(matching identity: DisplayIdentity) -> [String] {
+        for className in AppleSiliconDisplayMetadataBackend.candidateClasses {
+            let tokens = unitTokens(matching: identity, serviceClass: className)
+            if !tokens.isEmpty { return tokens }
+        }
+        return []
+    }
+
+    static func unitTokens(matching identity: DisplayIdentity, serviceClass: String) -> [String] {
         var tokens: [(token: String, score: Int)] = []
 
-        IORegistryAccess.forEachService(matchingClass: "AppleCLCD2") { service, _ in
+        IORegistryAccess.forEachService(matchingClass: serviceClass) { service, _ in
             guard let attributes = IORegistryAccess.dictionaryProperty(service, "DisplayAttributes"),
                   let record = AppleSiliconDisplayMetadataBackend.parse(
                     displayAttributes: attributes, registryEntryID: nil),
@@ -107,8 +123,11 @@ public final class AppleSiliconAVServiceTransport: DDCTransport, @unchecked Send
                   token.hasPrefix("dispext") // built-in panels have no DDC bus
             else { return }
 
-            // A field the registry does not report cannot disagree; only a field that is present and
-            // different rules the candidate out.
+            // Vendor and product rule a candidate out when present and different; a field the
+            // registry does not report cannot disagree. Serial deliberately never excludes — real
+            // hardware ships placeholder serials (0x01010101 observed), so a mismatch only withholds
+            // the bonus score. Candidates separated by nothing but an untrusted serial then tie, and
+            // the caller refuses the ambiguity rather than guessing.
             var score = 0
             if let vendor = record.vendorID {
                 guard vendor == identity.vendorID else { return }

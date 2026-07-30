@@ -70,8 +70,11 @@ public final class DisplayServicesShim: @unchecked Sendable {
 
     /// Returns `nil` rather than a sentinel when the read fails, so callers cannot mistake a failure
     /// for "brightness is 0" and dim a display to black.
+    ///
+    /// Gated on `isAvailable`, not just `getFn`: if the set symbol is missing this shim must not
+    /// half-work, or a probe would report a controller whose writes can never succeed.
     public func brightness(for display: CGDirectDisplayID) -> Float? {
-        guard let getFn else { return nil }
+        guard isAvailable, let getFn else { return nil }
         var value: Float = 0
         let status = getFn(display, &value)
         guard status == 0 else {
@@ -83,7 +86,7 @@ public final class DisplayServicesShim: @unchecked Sendable {
 
     @discardableResult
     public func setBrightness(_ value: Float, for display: CGDirectDisplayID) -> Bool {
-        guard let setFn else { return false }
+        guard isAvailable, let setFn else { return false }
         let clamped = min(max(value, 0), 1)
         let status = setFn(display, clamped)
         guard status == 0 else {

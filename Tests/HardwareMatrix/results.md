@@ -155,7 +155,7 @@ the frame fails in CI instead of on someone's desk.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Apple Silicon | 26.5.2 | — | — | Built-in XDR | n/a | n/a | n/a (built-in) | TBD | native brightness works (DisplayServices) |
 | Apple Silicon | 26.5.2 | USB-C | Realtek path | 2560×1600 (RTK/0x2560) | **no I2C** (`0xe0114000`) | **no I2C** | untested | TBD | AV service binds; gamma fallback works |
-| Apple Silicon | 26 | USB-C → DP | direct | TBD | TBD | TBD | TBD | TBD | |
+| Apple Silicon | 26.5.2 | USB-C → DP | direct | ViewSonic VX2780-2K (0x5A63/0x003F) | **works** | **works** (set + read-back) | untested | TBD | frame shape is link-dependent; see section above |
 | Apple Silicon | 26 | USB-C → USB-C | direct | TBD | TBD | TBD | TBD | TBD | |
 | Apple Silicon | 26 | HDMI | direct | TBD | TBD | TBD | TBD | TBD | HDMI often blocks DDC |
 | Apple Silicon | 15 | USB-C → DP | direct | TBD | TBD | TBD | TBD | TBD | |

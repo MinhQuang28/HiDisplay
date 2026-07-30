@@ -249,15 +249,26 @@ func sweepDDCWireFormat() async {
     for snapshot in snapshots where !snapshot.device.isBuiltIn {
         heading("DDC wire-format sweep — \(snapshot.device.name)")
 
+        // Resolve the AV service through the same unit-token match the app's transport uses.
+        // Grabbing the first external DCPAVServiceProxy would sweep the wrong monitor whenever more
+        // than one is attached — the exact bug the transport exists to prevent.
+        let tokens = AppleSiliconAVServiceTransport.unitTokens(matching: snapshot.device.identity)
+        guard tokens.count == 1 else {
+            print(tokens.isEmpty
+                ? "no display unit matched this identity"
+                : "\(tokens.count) indistinguishable display units; skipping")
+            continue
+        }
+
         var target: CFTypeRef?
         IORegistryAccess.forEachService(matchingClass: "DCPAVServiceProxy") { service, _ in
-            guard target == nil,
-                  IORegistryAccess.stringProperty(service, "Location")?
-                    .caseInsensitiveCompare("External") == .orderedSame
-            else { return }
+            guard target == nil, IORegistryAccess.displayUnitToken(service) == tokens[0] else { return }
             target = shim.makeService(for: service)
         }
-        guard let service = target else { return print("no external AV service") }
+        guard let service = target else {
+            print("no DCPAVServiceProxy for display unit \(tokens[0])")
+            continue
+        }
 
         let full = VCPCodec.getRequest(code: .brightness)          // 51 82 01 10 AC
         let headless = Array(full.dropFirst())                     //    82 01 10 AC

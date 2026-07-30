@@ -8,6 +8,10 @@ import Foundation
 ///
 /// Returns `nil` on a missing symbol rather than trapping: a macOS release that removes one of these
 /// must degrade a feature, not crash the app on launch.
+///
+/// `T` must be a `@convention(c)` function type matching the symbol's C signature. Nothing here can
+/// enforce that — `unsafeBitCast` to a plain Swift function type would compile and then corrupt the
+/// call — so every call site declares its typealias with `@convention(c)` explicitly.
 func resolveSymbol<T>(_ handle: UnsafeMutableRawPointer?, _ name: String, as type: T.Type) -> T? {
     guard let handle, let pointer = dlsym(handle, name) else { return nil }
     return unsafeBitCast(pointer, to: T.self)

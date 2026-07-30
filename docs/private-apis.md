@@ -47,16 +47,19 @@ documentation.**
 **Binding verified:** with an external display attached, `IOAVServiceCreateWithService` succeeds
 against the correct `DCPAVServiceProxy` node.
 
-**A successful DDC transaction is still unverified.** On the only external display available, every
-combination of chip address (`0x37`, `0x6E`) and offset (`0x51`, `0x00`) fails identically and
-immediately, on both read and write, with `0xe0114000` — an IOKit error in DCP's own subsystem `0x114`,
-not in the general `kIOReturn*` range. Identical immediate failure across all four combinations and both
-directions is the signature of a link that carries video but no I2C, not of wrong framing: a bad chip
-address would fail differently from a bad offset. That display is a Realtek USB-C path with an empty
-product name and a placeholder serial (`0x01010101`), i.e. an adapter or dock.
+**A successful DDC transaction is verified on hardware.** On a ViewSonic VX2780-2K over direct
+DisplayPort (macOS 26.5.2), Get VCP 0x10 returns checksum-valid replies and Set VCP 0x10 changes the
+backlight with correct read-back — after two framing corrections: the leading 0x51 host-address byte
+is link-dependent (the monitor's DP 1.1 mode flips which shape answers), and reply checksums seed
+from 0x50, not 0x51. Both captured frames are golden-value tests in `VCPCodecTests`. Full narrative
+in `Tests/HardwareMatrix/results.md`.
 
-So the framing remains unproven against a monitor that answers. See
-`Tests/HardwareMatrix/results.md`.
+One earlier display — a Realtek USB-C path with an empty product name and a placeholder serial
+(`0x01010101`) — fails every chip/offset combination identically and immediately with `0xe0114000`
+(an IOKit error in DCP's own subsystem `0x114`, not the general `kIOReturn*` range). Identical
+immediate failure in both directions is the signature of a link that carries video but no I2C — an
+adapter or dock, not a monitor exposing its scaler. The transport reports that reason and the
+resolver falls back to gamma dimming, which is the degrade path working as designed.
 
 **Degrade path:** `isAvailable` is false if any of the three is missing; the transport reports
 `.unsupported`; `BrightnessControllerResolver` falls through to gamma, then shade dimming.
@@ -169,6 +172,12 @@ dispext0:dcpav-service-epic:0  → DCPAVServiceProxy  (is the IOAVService source
 Passing the wrong node to `IOAVServiceCreateWithService` returns null silently, which presented as "no
 DDC transport could bind" and looked like a hardware limitation. Covered by `DisplayUnitTokenTests`.
 
+`AppleSiliconAVServiceTransport.unitTokens` scans the same ordered candidate classes as the metadata
+backend (`DCPAVServiceProxy`, then `AppleCLCD2`, then `IOMobileFramebufferShim`) rather than
+hard-coding the macOS 26 location: community documentation for earlier releases puts
+`DisplayAttributes` on `DCPAVServiceProxy`, and a transport pinned to one class would silently
+disable DDC on the releases using the other.
+
 ### `scale-resolutions` entry encoding
 
 Documented in full in [hidpi-overrides.md](hidpi-overrides.md), including the survey of 252 real
@@ -183,6 +192,18 @@ grep -rn 'dlsym(\|dlopen(' Sources/ | grep -v 'PlatformShims/'
 ```
 
 That command must produce no output. Any new symbol requires an entry in this file first.
+
+## Known OS regressions affecting the degrade path
+
+- **`CGSetDisplayTransferByFormula`/`ByTable` do nothing on M5 Pro, M5 Max and MacBook Neo from
+  macOS 26.3.1** (Apple bug FB22273730 — confirmed reproduced by DTS, open as of July 2026; affects
+  BetterDisplay, MonitorControl, f.lux, Lunar alike). The calls return success and read back the
+  values they wrote, but the display does not change — so the failure is invisible to return-code
+  checks, and on affected machines the DDC → gamma fallback silently has no effect. Shade dimming is
+  unaffected. Gamma verified working on this project's dev machine (not an affected model). If user
+  reports of "gamma dimming does nothing" arrive from that hardware, prefer shade over gamma there;
+  the suggested workaround in the Apple forums thread is `ColorSyncDeviceSetCustomProfiles`, which
+  takes a different pipeline path. Reference: https://developer.apple.com/forums/thread/819331
 
 ## What is deliberately *not* used
 
