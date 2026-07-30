@@ -12,7 +12,7 @@ import SwiftUI
 @MainActor
 final class AppModel: ObservableObject {
 
-    static let version = "0.6.1"
+    static let version = "0.6.2"
     /// One instance for the process. `AppDelegate` needs to reach the same object the scene shows in
     /// order to tear down shade windows and flush profiles on quit.
     static let shared = AppModel()

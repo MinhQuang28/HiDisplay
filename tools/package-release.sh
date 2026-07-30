@@ -11,9 +11,14 @@ PUBLISH=0
 [ "${1:-}" = "--publish" ] && PUBLISH=1
 
 APP_NAME="HiDisplay"
-# Single source of truth for the version: read it straight out of build-app.sh.
-VERSION="$(awk -F'"' '/^VERSION=/ {print $2; exit}' build-app.sh)"
-[ -n "$VERSION" ] || { echo "error: could not read VERSION from build-app.sh" >&2; exit 1; }
+# Single source of truth for the version: AppModel.swift, same as build-app.sh reads. (This used to
+# scrape build-app.sh's VERSION= line, which silently broke when that line became a command.)
+VERSION="$(sed -n 's/.*static let version = "\([^"]*\)".*/\1/p' Sources/HiDisplay/AppModel.swift)"
+[ -n "$VERSION" ] || { echo "error: could not read AppModel.version" >&2; exit 1; }
+case "$VERSION" in
+    [0-9]*.[0-9]*) ;;
+    *) echo "error: version '$VERSION' does not look like a version number" >&2; exit 1 ;;
+esac
 TAG="v${VERSION}"
 
 APP="build/${APP_NAME}.app"
