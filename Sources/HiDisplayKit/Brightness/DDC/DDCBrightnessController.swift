@@ -37,8 +37,11 @@ public actor DDCBrightnessController: BrightnessController {
         }
 
         guard let session = session(for: display) else {
+            // Transient: right after a monitor wakes, the registry node carrying `DisplayAttributes`
+            // can be empty for a few seconds, so a bind that fails now may succeed shortly.
             return BrightnessProbeResult(
-                isSupported: false, kind: .ddc, detail: "no DDC transport could bind to this display")
+                isSupported: false, kind: .ddc, detail: "no DDC transport could bind to this display",
+                isTransient: true)
         }
 
         let first = await probeRead(session, display: display)
@@ -90,13 +93,24 @@ public actor DDCBrightnessController: BrightnessController {
                         detail: "read \(reply.current)/\(reply.maximum) with an invalid checksum"),
                         false)
                 } catch {
+                    // No fresh-transport retry — the first answer proved the transport works — but a
+                    // timeout or I/O error here is still transient for the coordinator's re-probe,
+                    // same as in the outer catch.
+                    let ddcError = error as? DDCError
+                    let transient = (ddcError?.isRetryable ?? false) || ddcError == .disconnected
                     return (BrightnessProbeResult(
-                        isSupported: false, kind: .ddc, detail: "\(error)"), false)
+                        isSupported: false, kind: .ddc, detail: "\(error)",
+                        isTransient: transient), false)
                 }
             }
             let ddcError = error as? DDCError
             let retry = (ddcError?.isRetryable ?? false) || ddcError == .disconnected
-            return (BrightnessProbeResult(isSupported: false, kind: .ddc, detail: "\(error)"), retry)
+            // The same condition that justifies a fresh transport also marks the result transient: a
+            // timeout or I/O error is what a monitor whose I2C is still waking up looks like.
+            return (
+                BrightnessProbeResult(
+                    isSupported: false, kind: .ddc, detail: "\(error)", isTransient: retry),
+                retry)
         }
     }
 

@@ -36,6 +36,10 @@ public struct BrightnessProbeResult: Sendable {
     /// Why the probe concluded what it did — shown in diagnostics and in the Settings UI, so an
     /// unsupported display explains itself instead of just being greyed out.
     public var detail: String
+    /// True when a failed probe may succeed if repeated — a display that has just woken needs a few
+    /// seconds before its registry attributes and DDC bus answer again. False both for success and
+    /// for failures the display itself proved, like answering every read with the null message.
+    public var isTransient: Bool
 
     public init(
         isSupported: Bool,
@@ -43,7 +47,8 @@ public struct BrightnessProbeResult: Sendable {
         currentValue: Float? = nil,
         rawMinimum: UInt16? = nil,
         rawMaximum: UInt16? = nil,
-        detail: String = ""
+        detail: String = "",
+        isTransient: Bool = false
     ) {
         self.isSupported = isSupported
         self.kind = kind
@@ -51,6 +56,7 @@ public struct BrightnessProbeResult: Sendable {
         self.rawMinimum = rawMinimum
         self.rawMaximum = rawMaximum
         self.detail = detail
+        self.isTransient = isTransient
     }
 }
 

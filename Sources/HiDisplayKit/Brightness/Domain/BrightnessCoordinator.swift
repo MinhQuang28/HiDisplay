@@ -102,7 +102,17 @@ public final class BrightnessCoordinator: ObservableObject {
 
     // MARK: - Probing
 
+    /// Backoff before each DDC re-probe after a transient failure. The settled callback fires while a
+    /// just-woken monitor may still be re-registering its attributes and waking its I2C bus; these
+    /// bounded attempts cover that window without polling forever, and any newer probe or a
+    /// disconnect cancels them through the epoch check.
+    private static let ddcRetrySeconds = [2, 5, 10]
+
     public func probeAndChoose(display: DisplayDevice) async {
+        await probeAndChoose(display: display, ddcRetryAttempt: 0)
+    }
+
+    private func probeAndChoose(display: DisplayDevice, ddcRetryAttempt: Int) async {
         let epoch = bumpEpoch(for: display.id)
 
         // A built-in panel is not probed at all. Probing it would mean reading, and eventually
@@ -153,7 +163,18 @@ public final class BrightnessCoordinator: ObservableObject {
 
         let decision = BrightnessControllerResolver.resolve(
             display: display, availability: found, userOverride: userOverrides[display.id])
+        let previousKind = chosen[display.id]
         chosen[display.id] = decision.kind
+        // When hardware control takes over from software dimming — a DDC retry succeeding after the
+        // monitor finished waking is the common case — the software effect must be undone, or the
+        // display stays dimmed by a gamma ramp or shade underneath its now-DDC-controlled backlight.
+        if let previousKind, !previousKind.isHardware, decision.kind != previousKind {
+            await controllerInstance(previousKind).reset(display: display)
+            // The reset suspends off the main actor, so a teardown can interleave here; without this
+            // re-check the writes below would resurrect state for a display that just departed.
+            // Resetting a departed display's software dimming above is itself harmless.
+            guard isCurrent(epoch: epoch, for: display.id) else { return }
+        }
         if let reason = decision.overrideIgnoredReason {
             warnings[display.id] = reason
         } else {
@@ -175,6 +196,31 @@ public final class BrightnessCoordinator: ObservableObject {
 
         Log.brightness.debug(
             "\(display.id, privacy: .public): controller=\(decision.kind?.rawValue ?? "none", privacy: .public)")
+
+        scheduleDDCRetryIfNeeded(
+            for: display, after: ddcResult, attempt: ddcRetryAttempt, epoch: epoch)
+    }
+
+    /// Re-probes after a transient DDC failure instead of leaving the display on software dimming
+    /// until the next reconfiguration.
+    ///
+    /// This is the recovery for a monitor sleep/wake: the settled probe races the display's
+    /// re-registration and loses — the bind finds no matching display unit, or the bound transport
+    /// times out against an I2C bus that is not answering yet — and without a retry the downgrade to
+    /// software dimming is permanent, because nothing else ever probes DDC again.
+    private func scheduleDDCRetryIfNeeded(
+        for display: DisplayDevice, after ddcResult: BrightnessProbeResult, attempt: Int, epoch: Int
+    ) {
+        guard !ddcResult.isSupported, ddcResult.isTransient,
+              attempt < Self.ddcRetrySeconds.count else { return }
+        let seconds = Self.ddcRetrySeconds[attempt]
+        Log.brightness.notice(
+            "\(display.id, privacy: .public): DDC probe failed transiently (\(ddcResult.detail, privacy: .public)); retrying in \(seconds)s (attempt \(attempt + 1)/\(Self.ddcRetrySeconds.count))")
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard let self, self.isCurrent(epoch: epoch, for: display.id) else { return }
+            await self.probeAndChoose(display: display, ddcRetryAttempt: attempt + 1)
+        }
     }
 
     // MARK: - Setting

@@ -382,5 +382,46 @@ final class DDCBrightnessControllerRebindTests: XCTestCase {
 
         XCTAssertTrue(result.isSupported)
         XCTAssertEqual(binds.value, 1)
+        XCTAssertFalse(result.isTransient)
+    }
+
+    func testProbeMarksABindFailureTransient() async {
+        // A monitor that has just woken can be missing from the registry for a few seconds; the
+        // coordinator retries transient failures, so the bind failure must be marked as one.
+        let controller = DDCBrightnessController(makeTransport: { _ in nil })
+
+        let result = await controller.probe(display: makeExternalDisplay())
+
+        XCTAssertFalse(result.isSupported)
+        XCTAssertTrue(result.isTransient)
+    }
+
+    func testProbeMarksATimeoutTransientEvenAfterTheFreshTransportAlsoTimesOut() async {
+        // Both the stale and the freshly rebound transport time out — the monitor's I2C bus is not
+        // answering yet. Still transient: the same monitor answers once it finishes waking.
+        let controller = DDCBrightnessController(makeTransport: { _ in
+            let dead = FakeDDCTransport()
+            dead.errorToThrow = .timeout
+            return dead
+        })
+
+        let result = await controller.probe(display: makeExternalDisplay())
+
+        XCTAssertFalse(result.isSupported)
+        XCTAssertTrue(result.isTransient)
+    }
+
+    func testProbeDoesNotMarkANullAnswerTransient() async {
+        // The monitor answered — with the null message, in both frame shapes. That is a display
+        // proving it has no brightness control, not one that needs another attempt.
+        let nullReply = Array(repeating: VCPCodec.nullMessage, count: 4).flatMap { $0 }
+        let controller = DDCBrightnessController(makeTransport: { _ in
+            FakeDDCTransport(replies: [nullReply])
+        })
+
+        let result = await controller.probe(display: makeExternalDisplay())
+
+        XCTAssertFalse(result.isSupported)
+        XCTAssertFalse(result.isTransient)
     }
 }

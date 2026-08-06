@@ -176,6 +176,24 @@ reporting nonsense it can leave the panel stuck at the probe value.
 
 Probe results are cached per connection session and can be overridden per display in Settings.
 
+## Probes race display wake, so transient failures are retried
+
+Observed on macOS with a VX2780-2K: the settled probe after a monitor display-sleep/wake fires while
+the display is still re-registering. Two failure shapes, both within seconds of "Display is turned on"
+in `pmset -g log`:
+
+- the bind finds no display unit, because the registry node carrying `DisplayAttributes` has not been
+  repopulated yet (`no display unit matched vendor …` in `ddc.transport`);
+- the bind succeeds but the monitor's I2C bus is not answering yet, so the probe read times out.
+
+Both used to downgrade the display to software dimming *permanently* — nothing re-probes DDC until
+the next reconfiguration. Probe results now carry `isTransient`: true for bind failures and
+timeout/I/O errors, false for answers that prove the display itself declined (a null message is a
+monitor saying no, not a monitor still waking). `BrightnessCoordinator` re-probes transient failures
+at 2 s / 5 s / 10 s, epoch-guarded so a disconnect or newer probe cancels the chain, and undoes the
+interim software dimming when DDC comes back. A display that genuinely never binds (DisplayLink,
+AirPlay, virtual) costs three bounded extra probes per settle and then stays on software dimming.
+
 ## When there is no I2C channel at all
 
 Observed on macOS 26.5.2 through a Realtek USB-C display path: every combination of chip address
