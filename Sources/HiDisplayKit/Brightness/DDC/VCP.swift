@@ -98,7 +98,7 @@ public enum VCPCodec {
     ) -> [UInt8] {
         wireBytes([
             DDC.hostAddress,
-            0x80 | 4,
+            UInt8(0x80 | 4),
             0x03,
             code.rawValue,
             UInt8(truncatingIfNeeded: value >> 8),
@@ -116,7 +116,7 @@ public enum VCPCodec {
     ) -> [UInt8] {
         wireBytes([
             DDC.hostAddress,
-            0x80 | 2,
+            UInt8(0x80 | 2),
             0x01,
             code.rawValue,
         ], shape: shape)
