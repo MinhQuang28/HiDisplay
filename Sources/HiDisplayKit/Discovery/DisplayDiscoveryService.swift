@@ -41,6 +41,20 @@ public final class DisplayDiscoveryService: ObservableObject {
     private var settleWorkItem: DispatchWorkItem?
     private var isRegistered = false
 
+    /// Stamps every snapshot at the moment it starts. Bumped whenever the world may have moved past
+    /// an in-flight snapshot — a reconfiguration callback, a synchronous `refreshNow`, `stop()` —
+    /// so a background result that raced one of those is discarded instead of published stale.
+    private var snapshotGeneration = 0
+    /// True from a reconfiguration callback until the next snapshot publishes. When still false at
+    /// settle time, the debounced refresh already saw everything and the settle can reuse its list
+    /// instead of enumerating a second time.
+    private var needsRefresh = false
+    /// Set when settle fires while a snapshot is still due or in flight; the next publish that
+    /// survives the generation check fires `settled` with the list it just published. This is what
+    /// guarantees a settle event is never dropped — even a synchronous `refreshNow` landing in
+    /// that window consumes it, correctly, with a strictly newer list.
+    private var settlePending = false
+
     public init(metadataBackend: DisplayMetadataBackend = CompositeDisplayMetadataBackend()) {
         self.metadataBackend = metadataBackend
     }
@@ -70,6 +84,10 @@ public final class DisplayDiscoveryService: ObservableObject {
         isRegistered = false
         refreshWorkItem?.cancel()
         settleWorkItem?.cancel()
+        // Discard any in-flight snapshot and the settle waiting on it: this is the quit path, and
+        // a result landing after teardown must not republish or fire a late `settled`.
+        snapshotGeneration += 1
+        settlePending = false
     }
 
     public func setUserAssignments(_ assignments: [String: UUID]) {
@@ -83,6 +101,15 @@ public final class DisplayDiscoveryService: ObservableObject {
     func scheduleRefresh() {
         refreshWorkItem?.cancel()
         settleWorkItem?.cancel()
+        // The world just moved: any snapshot already in flight predates this callback, and letting
+        // it publish would show a pre-callback list (and clear `needsRefresh` under the settle).
+        snapshotGeneration += 1
+        needsRefresh = true
+        // A settle still waiting on a snapshot is obsolete too — this callback just rescheduled a
+        // new one. Carrying the flag over would let the *debounced* publish fire `settled` a few
+        // hundred milliseconds after the burst, inside the DDC grace window the settle delay exists
+        // to provide.
+        settlePending = false
 
         // Before either timer: a reconfiguration has already cleared any gamma ramp the app applied,
         // so every millisecond spent debouncing is a millisecond of a display sitting at full
@@ -90,7 +117,7 @@ public final class DisplayDiscoveryService: ObservableObject {
         reconfigured.send()
 
         let refresh = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { self?.refreshNow() }
+            MainActor.assumeIsolated { self?.refreshInBackground() }
         }
         refreshWorkItem = refresh
         DispatchQueue.main.asyncAfter(deadline: .now() + refreshDebounce, execute: refresh)
@@ -98,34 +125,85 @@ public final class DisplayDiscoveryService: ObservableObject {
         let settle = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                self.refreshNow()
-                Log.discovery.debug("display configuration settled with \(self.displays.count) display(s)")
-                self.settled.send(self.displays)
+                // Both timers reset on every callback, so by construction no callback arrived
+                // since the debounced refresh. When its snapshot has already published, this list
+                // is current and enumerating a second time buys nothing. When it has not —
+                // superseded, or still running — flag the settle and let the next publish fire it.
+                if self.needsRefresh {
+                    self.settlePending = true
+                    self.refreshInBackground()
+                } else {
+                    self.sendSettled()
+                }
             }
         }
         settleWorkItem = settle
         DispatchQueue.main.asyncAfter(deadline: .now() + settleDelay, execute: settle)
     }
 
+    /// Synchronous refresh, for the callers that read `displays` on the next line — `start()`,
+    /// `setUserAssignments`, and the resolution-change path. Publishing here also supersedes any
+    /// in-flight background snapshot: it would land with an older view than this one.
     public func refreshNow() {
-        let resolved = Self.snapshot(metadataBackend: metadataBackend, userAssignments: userAssignments)
+        snapshotGeneration += 1
+        publish(Self.snapshot(metadataBackend: metadataBackend, userAssignments: userAssignments))
+    }
+
+    /// Enumerates off the main actor and publishes back on it.
+    ///
+    /// The snapshot is IORegistry scans plus per-display mode enumeration — tens of milliseconds
+    /// that used to block the menu bar during every replug burst. The CoreGraphics display queries
+    /// involved are read-only WindowServer IPC with no formal thread-safety guarantee from Apple;
+    /// ecosystem precedent treats them as safe off-main, and a display vanishing mid-snapshot
+    /// degrades to empty modes/nil bounds rather than corrupting anything.
+    private func refreshInBackground() {
+        let generation = snapshotGeneration
+        let backend = metadataBackend
+        let assignments = userAssignments
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let resolved = DisplayDiscoveryService.snapshot(
+                metadataBackend: backend, userAssignments: assignments)
+            guard let self else { return }
+            await self.applySnapshot(resolved, ifCurrent: generation)
+        }
+    }
+
+    private func applySnapshot(_ resolved: [Snapshot], ifCurrent generation: Int) {
+        // A stale result is dropped whole: something newer either published already or is about
+        // to, and `settlePending` — if set — survives for that newer publish to consume.
+        guard generation == snapshotGeneration else { return }
+        publish(resolved)
+    }
+
+    private func publish(_ resolved: [Snapshot]) {
+        needsRefresh = false
         displays = resolved.map(\.device)
         ambiguousKeys = Set(resolved.filter { $0.pairing == .ambiguous }.map(\.device.id))
         if !ambiguousKeys.isEmpty {
             Log.discovery.notice("\(self.ambiguousKeys.count, privacy: .public) display(s) need the user to confirm identity")
         }
+        if settlePending {
+            settlePending = false
+            sendSettled()
+        }
+    }
+
+    private func sendSettled() {
+        Log.discovery.debug("display configuration settled with \(self.displays.count) display(s)")
+        settled.send(displays)
     }
 
     // MARK: - Snapshot
 
-    public struct Snapshot {
+    public struct Snapshot: Sendable {
         public var device: DisplayDevice
         public var pairing: PairingConfidence
     }
 
     /// Pure-ish read of the current configuration. Static so it can be called before `start()` and so
-    /// it has no dependency on published state.
-    public static func snapshot(
+    /// it has no dependency on published state; `nonisolated` because the debounced refresh runs it
+    /// off the main actor — nothing in here may touch published state or AppKit.
+    nonisolated public static func snapshot(
         metadataBackend: DisplayMetadataBackend,
         userAssignments: [String: UUID]
     ) -> [Snapshot] {
@@ -170,7 +248,7 @@ public final class DisplayDiscoveryService: ObservableObject {
         }
     }
 
-    static func displayName(for entry: ResolvedDisplay, isBuiltIn: Bool) -> String {
+    nonisolated static func displayName(for entry: ResolvedDisplay, isBuiltIn: Bool) -> String {
         if let name = entry.metadata?.productName, !name.isEmpty { return name }
         if isBuiltIn { return "Built-in Display" }
         // Last resort: a vendor/product label is more useful for support than "Unknown Display",
@@ -178,7 +256,7 @@ public final class DisplayDiscoveryService: ObservableObject {
         return String(format: "Display %04X:%04X", entry.identity.vendorID, entry.identity.productID)
     }
 
-    static func onlineDisplays() -> [RawDisplayInfo] {
+    nonisolated static func onlineDisplays() -> [RawDisplayInfo] {
         var count: UInt32 = 0
         guard CGGetOnlineDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
         var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))

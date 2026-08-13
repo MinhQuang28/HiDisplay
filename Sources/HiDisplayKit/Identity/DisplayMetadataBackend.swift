@@ -61,7 +61,10 @@ public struct DisplayMetadata: Equatable, Sendable {
 /// displays somewhere new — see docs/private-apis.md. There was a second implementation reading
 /// `IODisplayConnect`, the Intel-era node; it was removed when the project narrowed to Apple Silicon,
 /// where that node has no matching services for external displays.
-public protocol DisplayMetadataBackend {
+///
+/// `Sendable` because discovery snapshots run off the main actor; implementations must stay
+/// stateless reads (both current ones are empty structs).
+public protocol DisplayMetadataBackend: Sendable {
     var name: String { get }
     func enumerate() -> [DisplayMetadata]
 }
