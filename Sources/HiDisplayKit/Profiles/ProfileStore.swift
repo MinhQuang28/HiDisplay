@@ -163,6 +163,29 @@ public actor ProfileStore {
         upsert({ $0.brightnessController = kind }, for: display)
     }
 
+    /// Caches what a live DDC session learned, so the next connection to the same display starts
+    /// from the right frame shape, range and checksum tolerance instead of rediscovering them.
+    public func setDDCFacts(_ facts: DDCSessionFacts, for display: DisplayDevice) {
+        // Facts arrive on every settle and wake, and are almost always unchanged; skipping the
+        // upsert then keeps `updatedAt` honest and stops each settle rewriting profiles.json.
+        guard ddcFacts(for: display.id) != facts else { return }
+        upsert({
+            $0.ddcFrameShape = facts.frameShape
+            $0.ddcMinimum = 0
+            $0.ddcMaximum = Int(facts.maximum)
+            $0.ddcTolerateChecksumMismatch = facts.tolerateChecksumMismatch
+        }, for: display)
+    }
+
+    /// The seed for a display's next DDC session, when one was saved.
+    public func ddcFacts(for key: String) -> DDCSessionFacts? {
+        guard let profile = document.profiles[key], let shape = profile.ddcFrameShape else { return nil }
+        return DDCSessionFacts(
+            frameShape: shape,
+            maximum: UInt16(clamping: profile.ddcMaximum ?? 100),
+            tolerateChecksumMismatch: profile.ddcTolerateChecksumMismatch ?? false)
+    }
+
     public func save(hiDPIProfile: HiDPIProfile) {
         var profile = hiDPIProfile
         profile.updatedAt = Date()

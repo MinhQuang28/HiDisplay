@@ -50,6 +50,31 @@ public final class BrightnessCoordinator: ObservableObject {
         Task { await probeAndChoose(display: display) }
     }
 
+    /// Records a saved override without probing.
+    ///
+    /// For settle time, when the override and the probe both come from the same event: seeding first
+    /// lets the one probe in `handleSettledDisplays` resolve against it. Routing through
+    /// `setUserOverride` instead re-probed every display that had a saved controller — two full DDC
+    /// cycles on the bus per settle, and the brightness restore in between ran on the wrong
+    /// controller.
+    public func seedUserOverride(_ kind: BrightnessControllerKind?, for key: String) {
+        if let kind {
+            userOverrides[key] = kind
+        } else {
+            userOverrides.removeValue(forKey: key)
+        }
+    }
+
+    /// Hands persisted DDC session facts to the DDC controller, ahead of the session being created.
+    public func seedDDCFacts(_ facts: DDCSessionFacts, for key: String) async {
+        await ddc.seedFacts(facts, for: key)
+    }
+
+    /// What the live DDC session has learned about a display, for persisting.
+    public func ddcFacts(for key: String) async -> DDCSessionFacts? {
+        await ddc.facts(for: key)
+    }
+
     public func userOverride(for key: String) -> BrightnessControllerKind? { userOverrides[key] }
     public func controller(for key: String) -> BrightnessControllerKind? { chosen[key] }
 
@@ -59,7 +84,9 @@ public final class BrightnessCoordinator: ObservableObject {
     ///
     /// Called from `DisplayDiscoveryService.settled` rather than on every reconfiguration callback,
     /// because a display often appears before its DDC bus answers.
-    public func handleSettledDisplays(_ displays: [DisplayDevice], restore: (String) -> Float?) async {
+    public func handleSettledDisplays(
+        _ displays: [DisplayDevice], restore: @escaping @Sendable (String) -> Float?
+    ) async {
         let liveKeys = Set(displays.map(\.id))
 
         // Tear down anything that left, before probing what arrived: a departed display's queue must
@@ -73,10 +100,19 @@ public final class BrightnessCoordinator: ObservableObject {
         }
         await ddc.invalidateAll(except: liveKeys)
 
-        for display in displays {
-            await probeAndChoose(display: display)
-            if let saved = restore(display.id) {
-                await setBrightness(saved, for: display)
+        // Displays probe concurrently: each has its own DDC queue and its own bus, so nothing is
+        // shared across them, and waiting for one monitor's slow probe before starting the next
+        // made settle-to-ready scale with display count. Within one display the probe order stays
+        // sequential — see `probeAndChoose`.
+        await withTaskGroup(of: Void.self) { group in
+            for display in displays {
+                group.addTask { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.probeAndChoose(display: display)
+                    if let saved = restore(display.id) {
+                        await self.setBrightness(saved, for: display)
+                    }
+                }
             }
         }
     }
@@ -262,7 +298,11 @@ public final class BrightnessCoordinator: ObservableObject {
     public func resetAllDimming() {
         gamma.resetAll()
         shade.resetAll()
-        for (key, state) in states {
+        // Only software-dimmed states move to 1.0 — those are the ones the resets above actually
+        // changed. A DDC or native display's backlight was deliberately left alone, and faking its
+        // state to 100% would show the wrong number and make the next key press step from a
+        // phantom value instead of the real one.
+        for (key, state) in states where !state.controller.isHardware {
             states[key] = BrightnessState(
                 requestedValue: 1.0, effectiveValue: 1.0, controller: state.controller)
         }

@@ -45,6 +45,48 @@ final class ProfileStoreTests: XCTestCase {
         XCTAssertEqual(profile.keyTier, .strong)
     }
 
+    func testPersistsAndRestoresDDCFacts() async throws {
+        let display = makeDisplay()
+        let store = ProfileStore(fileURL: fileURL, saveDebounce: .milliseconds(1))
+        await store.setDDCFacts(
+            DDCSessionFacts(frameShape: .withoutHostAddress, maximum: 255, tolerateChecksumMismatch: true),
+            for: display)
+        await store.flush()
+
+        let reloaded = ProfileStore(fileURL: fileURL)
+        await reloaded.load()
+        let facts = await reloaded.ddcFacts(for: display.id)
+        XCTAssertEqual(facts, DDCSessionFacts(
+            frameShape: .withoutHostAddress, maximum: 255, tolerateChecksumMismatch: true))
+    }
+
+    /// Facts arrive on every settle; identical ones must not touch the profile at all.
+    func testUnchangedDDCFactsDoNotRewriteTheProfile() async throws {
+        let display = makeDisplay()
+        let store = ProfileStore(fileURL: fileURL, saveDebounce: .milliseconds(1))
+        let facts = DDCSessionFacts(frameShape: .withHostAddress, maximum: 100)
+        await store.setDDCFacts(facts, for: display)
+        let before = await store.profile(for: display.id)
+        let stamped = try XCTUnwrap(before).updatedAt
+
+        try await Task.sleep(for: .milliseconds(20))
+        await store.setDDCFacts(facts, for: display)
+
+        let rewritten = await store.profile(for: display.id)
+        let after = try XCTUnwrap(rewritten).updatedAt
+        XCTAssertEqual(after, stamped, "identical facts must be a no-op, not an updatedAt bump")
+    }
+
+    /// A profile written before these fields existed must load, and simply have no facts to seed.
+    func testDDCFactsAreNilOnAProfileWithoutThem() async {
+        let display = makeDisplay()
+        let store = ProfileStore(fileURL: fileURL, saveDebounce: .milliseconds(1))
+        await store.setBrightness(0.5, for: display)
+
+        let facts = await store.ddcFacts(for: display.id)
+        XCTAssertNil(facts, "no frame shape saved means nothing to seed — not a default seed")
+    }
+
     /// The bug this guards: a reconnect creating a second profile for the same monitor.
     func testUpsertDoesNotDuplicateOnReconnect() async {
         let store = ProfileStore(fileURL: fileURL, saveDebounce: .milliseconds(1))

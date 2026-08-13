@@ -1,5 +1,30 @@
 import Foundation
 
+/// What a DDC session learns about a display by talking to it: which frame shape it answers, the
+/// raw range it reports, and whether its reply checksums are trustworthy.
+///
+/// Persisted per display key and seeded into the next session for the same display, so a reconnect
+/// or wake does not re-pay the discovery cost — a wrong-shape null-message round-trip, a failed
+/// checksum read — on hardware whose quirks are already known. Every fact is a starting point, not
+/// a promise: the queue still re-learns the shape on any null message, and the range is replaced by
+/// the first reply.
+public struct DDCSessionFacts: Equatable, Sendable, Codable {
+    public var frameShape: DDC.FrameShape
+    /// Monitor-reported raw maximum (MCCS default 100).
+    public var maximum: UInt16
+    public var tolerateChecksumMismatch: Bool
+
+    public init(
+        frameShape: DDC.FrameShape = .withHostAddress,
+        maximum: UInt16 = 100,
+        tolerateChecksumMismatch: Bool = false
+    ) {
+        self.frameShape = frameShape
+        self.maximum = maximum
+        self.tolerateChecksumMismatch = tolerateChecksumMismatch
+    }
+}
+
 /// Hardware brightness over DDC/CI.
 ///
 /// Owns exactly one `DDCCommandQueue` per display key, created lazily and torn down on disconnect.
@@ -12,12 +37,18 @@ public actor DDCBrightnessController: BrightnessController {
     private struct Session {
         let queue: DDCCommandQueue
         var range: DDCCommandQueue.Range
-        /// Set once a monitor has been observed to miscompute reply checksums, so subsequent reads
-        /// tolerate it instead of failing forever.
+        /// Tracks whether the monitor's replies currently miscompute their checksum, so reads
+        /// tolerate it instead of failing forever. Follows the latest observation in both
+        /// directions: a valid reply clears it again, because latching true forever — and now
+        /// persisting it — would let one bus glitch permanently disable checksum verification.
         var tolerateChecksumMismatch: Bool
     }
 
     private var sessions: [String: Session] = [:]
+    /// Facts persisted from a previous connection, keyed by display key. Consulted once, when a
+    /// session is created; deliberately never cleared on invalidate, because surviving the
+    /// invalidate/rebind cycle is the entire point.
+    private var seeds: [String: DDCSessionFacts] = [:]
     private let makeTransport: @Sendable (DisplayIdentity) -> DDCTransport?
 
     /// - Parameter makeTransport: injected so tests can supply `FakeDDCTransport` without touching
@@ -68,7 +99,10 @@ public actor DDCBrightnessController: BrightnessController {
         _ session: Session, display: DisplayDevice
     ) async -> (result: BrightnessProbeResult, retryOnFreshTransport: Bool) {
         do {
-            let reply = try await session.queue.readBrightness()
+            // Honour a seeded tolerance up front: a monitor already known to miscompute checksums
+            // would otherwise fail this first read and re-pay the retry below on every reconnect.
+            let reply = try await session.queue.readBrightness(
+                tolerateChecksumMismatch: session.tolerateChecksumMismatch)
             updateRange(for: display.id, minimum: 0, maximum: reply.maximum,
                         tolerateChecksumMismatch: !reply.checksumValid)
             let normalized = VCPCodec.normalized(fromRaw: reply.current, minimum: 0, maximum: reply.maximum)
@@ -85,7 +119,7 @@ public actor DDCBrightnessController: BrightnessController {
                 do {
                     let reply = try await session.queue.readBrightness(tolerateChecksumMismatch: true)
                     updateRange(for: display.id, minimum: 0, maximum: reply.maximum,
-                                tolerateChecksumMismatch: true)
+                                tolerateChecksumMismatch: !reply.checksumValid)
                     let normalized = VCPCodec.normalized(fromRaw: reply.current, minimum: 0, maximum: reply.maximum)
                     return (BrightnessProbeResult(
                         isSupported: true, kind: .ddc, currentValue: normalized,
@@ -124,7 +158,7 @@ public actor DDCBrightnessController: BrightnessController {
         // maximum this read normalised with — mixing the cached range with a fresh reply is harmless
         // while the minimum is always 0, and a trap the moment it is not.
         updateRange(for: display.id, minimum: session.range.minimum, maximum: reply.maximum,
-                    tolerateChecksumMismatch: session.tolerateChecksumMismatch)
+                    tolerateChecksumMismatch: !reply.checksumValid)
         return VCPCodec.normalized(
             fromRaw: reply.current, minimum: session.range.minimum, maximum: reply.maximum)
     }
@@ -142,6 +176,24 @@ public actor DDCBrightnessController: BrightnessController {
 
     public func reset(display: DisplayDevice) async {
         await invalidate(key: display.id)
+    }
+
+    // MARK: - Session facts
+
+    /// Stores persisted facts to seed the next session created for this key. A session that already
+    /// exists is left alone — it holds live, fresher knowledge than the disk does.
+    public func seedFacts(_ facts: DDCSessionFacts, for key: String) {
+        seeds[key] = facts
+    }
+
+    /// Reads what the live session currently knows, for persisting. `nil` when no session exists —
+    /// the caller then has nothing newer than what it already saved.
+    public func facts(for key: String) async -> DDCSessionFacts? {
+        guard let session = sessions[key] else { return nil }
+        return DDCSessionFacts(
+            frameShape: await session.queue.currentFrameShape,
+            maximum: session.range.maximum,
+            tolerateChecksumMismatch: session.tolerateChecksumMismatch)
     }
 
     /// Cancels and drops the queue for a display. Called on disconnect so pending retries stop
@@ -163,12 +215,15 @@ public actor DDCBrightnessController: BrightnessController {
     private func session(for display: DisplayDevice) -> Session? {
         if let existing = sessions[display.id] { return existing }
         guard let transport = makeTransport(display.identity), transport.isUsable else { return nil }
+        // Persisted facts beat the MCCS defaults as a starting point; the probe still replaces the
+        // range with whatever the monitor reports before any value is written, and the queue still
+        // re-learns the shape on a null message.
+        let seed = seeds[display.id] ?? DDCSessionFacts()
         let session = Session(
-            queue: DDCCommandQueue(transport: transport, label: display.id),
-            // 0…100 is the MCCS default and the right starting assumption; the probe replaces it with
-            // whatever the monitor actually reports before any value is written.
-            range: DDCCommandQueue.Range(minimum: 0, maximum: 100),
-            tolerateChecksumMismatch: false)
+            queue: DDCCommandQueue(
+                transport: transport, label: display.id, initialFrameShape: seed.frameShape),
+            range: DDCCommandQueue.Range(minimum: 0, maximum: seed.maximum),
+            tolerateChecksumMismatch: seed.tolerateChecksumMismatch)
         sessions[display.id] = session
         return session
     }
@@ -178,7 +233,9 @@ public actor DDCBrightnessController: BrightnessController {
     ) {
         guard var session = sessions[key] else { return }
         session.range = DDCCommandQueue.Range(minimum: minimum, maximum: maximum)
-        if tolerateChecksumMismatch { session.tolerateChecksumMismatch = true }
+        // Assigned, not latched: callers pass what the latest reply's checksum actually looked
+        // like, so a monitor that starts computing checksums correctly gets verification back.
+        session.tolerateChecksumMismatch = tolerateChecksumMismatch
         sessions[key] = session
     }
 }

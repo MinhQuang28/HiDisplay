@@ -58,18 +58,23 @@ public actor DDCCommandQueue {
     /// The shape currently in use, for diagnostics.
     public var currentFrameShape: DDC.FrameShape { frameShape }
 
+    /// - Parameter initialFrameShape: the shape to try first, normally the one persisted from a
+    ///   previous connection to the same display. Wrong is cheap — the null-message fallback in
+    ///   `performRead` still re-learns — but starting right skips that round-trip entirely.
     public init(
         transport: DDCTransport,
         label: String,
         writeInterval: Duration = DDC.writeInterval,
         readTimeout: Duration = .milliseconds(500),
-        maxRetries: Int = 2
+        maxRetries: Int = 2,
+        initialFrameShape: DDC.FrameShape = .withHostAddress
     ) {
         self.transport = transport
         self.label = label
         self.writeInterval = writeInterval
         self.readTimeout = readTimeout
         self.maxRetries = maxRetries
+        self.frameShape = initialFrameShape
     }
 
     /// Stops accepting work and drops anything pending.

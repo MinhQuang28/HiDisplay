@@ -198,6 +198,21 @@ final class DDCCommandQueueTests: XCTestCase {
                        "the write went out in the shape that failed")
     }
 
+    /// A persisted shape seeds the queue, so a monitor that needs `withoutHostAddress` answers the
+    /// very first frame after a reconnect instead of paying a null-message round-trip to re-learn it.
+    func testSeededFrameShapeIsUsedFromTheFirstFrame() async throws {
+        let transport = ShapeSensitiveTransport(answers: .withoutHostAddress, current: 58)
+        let queue = DDCCommandQueue(
+            transport: transport, label: "test", writeInterval: interval,
+            initialFrameShape: .withoutHostAddress)
+
+        let reply = try await queue.readBrightness()
+
+        XCTAssertEqual(reply.current, 58)
+        XCTAssertEqual(transport.shapesSeen, [.withoutHostAddress],
+                       "the seeded shape must be tried first — one frame, no recovery attempt")
+    }
+
     /// A display that answers neither shape must still fail, and say why.
     func testBothShapesNullStillFails() async {
         let transport = FakeDDCTransport(
@@ -423,5 +438,106 @@ final class DDCBrightnessControllerRebindTests: XCTestCase {
 
         XCTAssertFalse(result.isSupported)
         XCTAssertFalse(result.isTransient)
+    }
+}
+
+/// Session facts seeded from a previous connection, and read back out for persisting — the path
+/// that lets a reconnect skip re-discovering a monitor's quirks.
+final class DDCSessionFactsTests: XCTestCase {
+
+    private func makeExternalDisplay() -> DisplayDevice {
+        DisplayDevice(
+            identity: DisplayIdentity(
+                cgDisplayID: 7, vendorID: 0x10AC, productID: 0xD0A1,
+                serialNumber: 0xABCD, keyTier: .strong),
+            name: "TEST U2723QE", isBuiltIn: false, isOnline: true, isMain: false)
+    }
+
+    private func validReply(current: UInt8) -> [UInt8] {
+        var frame: [UInt8] = [0x6E, 0x88, 0x02, 0x00, 0x10, 0x00, 0x00, 0x64, 0x00, current]
+        frame.append(frame.reduce(DDC.replyChecksumSeed) { $0 ^ $1 })
+        return frame
+    }
+
+    func testSeededShapeGoesOutOnTheFirstProbeFrame() async {
+        let display = makeExternalDisplay()
+        let transport = FakeDDCTransport(replies: [validReply(current: 42)])
+        let controller = DDCBrightnessController(makeTransport: { _ in transport })
+        await controller.seedFacts(
+            DDCSessionFacts(frameShape: .withoutHostAddress), for: display.id)
+
+        let result = await controller.probe(display: display)
+
+        XCTAssertTrue(result.isSupported)
+        XCTAssertNotEqual(transport.recordedWrites.first?.first, DDC.hostAddress,
+                          "the probe's get request must already use the seeded shape")
+    }
+
+    func testSeededChecksumToleranceAvoidsTheFailedFirstRead() async {
+        let display = makeExternalDisplay()
+        var badChecksum = validReply(current: 42)
+        badChecksum[badChecksum.count - 1] ^= 0xFF
+        let transport = FakeDDCTransport(replies: [badChecksum])
+        let controller = DDCBrightnessController(makeTransport: { _ in transport })
+        await controller.seedFacts(
+            DDCSessionFacts(tolerateChecksumMismatch: true), for: display.id)
+
+        let result = await controller.probe(display: display)
+
+        XCTAssertTrue(result.isSupported)
+        XCTAssertEqual(transport.writeAttempts, 1,
+                       "a known-bad checksum must not cost a failed read plus a retry")
+    }
+
+    func testSeededMaximumScalesTheFirstWriteBeforeAnyProbe() async throws {
+        let display = makeExternalDisplay()
+        let transport = FakeDDCTransport()
+        let controller = DDCBrightnessController(makeTransport: { _ in transport })
+        await controller.seedFacts(DDCSessionFacts(maximum: 200), for: display.id)
+
+        try await controller.setBrightness(0.5, display: display)
+
+        let deadline = ContinuousClock.now + .seconds(3)
+        while transport.recordedBrightnessValues.isEmpty, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(transport.recordedBrightnessValues.last, 100,
+                       "0.5 against the seeded 0…200 range is raw 100, not the MCCS-default 50")
+    }
+
+    func testFactsReportWhatTheLiveSessionLearned() async {
+        let display = makeExternalDisplay()
+        let transport = FakeDDCTransport(replies: [validReply(current: 42)])
+        let controller = DDCBrightnessController(makeTransport: { _ in transport })
+
+        _ = await controller.probe(display: display)
+        let facts = await controller.facts(for: display.id)
+
+        XCTAssertEqual(facts, DDCSessionFacts(
+            frameShape: .withHostAddress, maximum: 100, tolerateChecksumMismatch: false))
+    }
+
+    func testFactsAreNilWithoutASession() async {
+        let controller = DDCBrightnessController(makeTransport: { _ in nil })
+        let facts = await controller.facts(for: "never-seen")
+        XCTAssertNil(facts, "nothing was learned, so there is nothing newer than the disk")
+    }
+
+    /// Tolerance follows the monitor, in both directions: a seeded (or glitch-induced) tolerance
+    /// must clear once replies verify again, or one bad frame — now persisted — would disable
+    /// checksum verification for that display forever.
+    func testChecksumToleranceClearsWhenRepliesVerifyAgain() async {
+        let display = makeExternalDisplay()
+        let transport = FakeDDCTransport(replies: [validReply(current: 42)])
+        let controller = DDCBrightnessController(makeTransport: { _ in transport })
+        await controller.seedFacts(
+            DDCSessionFacts(tolerateChecksumMismatch: true), for: display.id)
+
+        let result = await controller.probe(display: display)
+        let facts = await controller.facts(for: display.id)
+
+        XCTAssertTrue(result.isSupported)
+        XCTAssertEqual(facts?.tolerateChecksumMismatch, false,
+                       "a valid checksum must un-learn the tolerance, not leave it latched")
     }
 }

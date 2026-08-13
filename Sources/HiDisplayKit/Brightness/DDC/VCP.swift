@@ -35,7 +35,10 @@ public enum DDC {
     ///
     /// The wrong shape produces a null message, never an error, so nothing detects this except trying
     /// the other one. `DDCCommandQueue` learns which applies and remembers it.
-    public enum FrameShape: Sendable, CaseIterable {
+    /// `String`-backed and `Codable` so the learned answer can be persisted per display and seeded
+    /// back into the next connection's queue, instead of re-paying the null-message round-trip on
+    /// every reconnect.
+    public enum FrameShape: String, Codable, Sendable, CaseIterable {
         /// Send the frame whole. The driver passes the buffer through untouched.
         case withHostAddress
         /// Drop the leading byte; the driver emits the sub-address itself. Sending it too makes the

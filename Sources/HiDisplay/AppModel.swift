@@ -101,8 +101,14 @@ final class AppModel: ObservableObject {
             .sink { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
-                    for display in self.displays where !display.isBuiltIn {
-                        await self.brightness.probeAndChoose(display: display)
+                    // Concurrently, same as the settle path: each display has its own queue and
+                    // bus, and waking three monitors serially tripled the time to working sliders.
+                    await withTaskGroup(of: Void.self) { group in
+                        for display in self.displays where !display.isBuiltIn {
+                            group.addTask { @MainActor in
+                                await self.brightness.probeAndChoose(display: display)
+                            }
+                        }
                     }
                 }
             }
@@ -161,21 +167,50 @@ final class AppModel: ObservableObject {
     }
 
     private func handleSettled(_ displays: [DisplayDevice]) async {
+        // Saved overrides and DDC facts go in *before* the probe pass, so the one probe per display
+        // resolves against them. The old order — probe, then `setUserOverride` — re-probed every
+        // display that had a saved controller (two full DDC cycles on the bus per settle), and the
+        // brightness restore in between ran on the pre-override controller.
+        for display in displays {
+            let profile = await profiles.profile(for: display.id)
+            brightness.seedUserOverride(profile?.brightnessController, for: display.id)
+            if let facts = await profiles.ddcFacts(for: display.id) {
+                await brightness.seedDDCFacts(facts, for: display.id)
+            }
+        }
+
         // Restoration reads the cache rather than the actor: `handleSettledDisplays` needs a
         // synchronous lookup, and the cache is refreshed whenever a value is written.
         await brightness.handleSettledDisplays(displays) { [savedBrightness] key in
             savedBrightness[key]
         }
-        for display in displays {
-            if let saved = await profiles.profile(for: display.id)?.brightnessController {
-                brightness.setUserOverride(saved, for: display)
+
+        // Persist what the probes just learned. Settle is the one moment this is fresh and cheap;
+        // a frame shape that flips mid-session (an OSD toggle) is picked up at the next settle or
+        // wake, which is when it matters again.
+        for display in displays where brightness.controller(for: display.id) == .ddc {
+            if let facts = await brightness.ddcFacts(for: display.id) {
+                await profiles.setDDCFacts(facts, for: display)
             }
         }
     }
 
     // MARK: - Actions
 
-    func setBrightness(_ value: Float, for display: DisplayDevice) {
+    /// - Parameter force: sends the write even when state says nothing changed. For the paths whose
+    ///   entire purpose is re-asserting a value against hardware that may have drifted — Sync
+    ///   Displays — because a DDC write can fail silently and state then lies.
+    func setBrightness(_ value: Float, for display: DisplayDevice, force: Bool = false) {
+        // A held brightness key repeats its clamped value at 0%/100%, and a slider can report the
+        // same position twice; each duplicate still queued a DDC frame and re-armed the profile
+        // save debounce. Skip only when both the saved value and the coordinator's requested value
+        // already match, so a probe re-seeding the UI can never make a real change look redundant.
+        if !force,
+           let saved = savedBrightness[display.id],
+           abs(saved - value) < 0.0005,
+           abs(brightness.brightness(for: display.id) - value) < 0.0005 {
+            return
+        }
         savedBrightness[display.id] = value
         Task {
             await brightness.setBrightness(value, for: display)
@@ -201,18 +236,25 @@ final class AppModel: ObservableObject {
         guard let source else { return }
         let value = brightness.brightness(for: source.id)
         for display in managed where display.id != source.id {
-            setBrightness(value, for: display)
+            // Forced: "sync" is the user's tool for re-asserting a value, including onto a monitor
+            // whose hardware silently missed an earlier fire-and-forget write.
+            setBrightness(value, for: display, force: true)
         }
     }
 
     func resetDimming() {
         brightness.resetAllDimming()
-        for display in brightnessManagedDisplays {
+        // Only software-dimmed displays actually changed: the reset deliberately leaves DDC and
+        // native backlights alone, so seeding 1.0 for those would make the UI claim 100% while the
+        // hardware sits wherever it was — and the no-op guard would then swallow the key press
+        // trying to fix it.
+        for display in brightnessManagedDisplays
+        where brightness.controller(for: display.id)?.isHardware != true {
             savedBrightness[display.id] = 1.0
             Task { await profiles.setBrightness(1.0, for: display) }
         }
         if let external = displays.first(where: { !$0.isBuiltIn }) {
-            osd.show(value: 1.0, display: external)
+            osd.show(value: brightness.brightness(for: external.id), display: external)
         }
     }
 

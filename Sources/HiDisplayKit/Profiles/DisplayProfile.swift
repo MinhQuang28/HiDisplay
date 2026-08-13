@@ -31,6 +31,10 @@ public struct DisplayProfile: Codable, Equatable, Sendable, Identifiable {
     /// wait for a DDC read.
     public var ddcMinimum: Int?
     public var ddcMaximum: Int?
+    /// Learned DDC session quirks, seeded into the next connection so a reconnect skips the
+    /// discovery round-trips. Optional so profiles written by older versions decode unchanged.
+    public var ddcFrameShape: DDC.FrameShape?
+    public var ddcTolerateChecksumMismatch: Bool?
     public var keyboardTargetEnabled: Bool
     public var hiDPIProfileID: UUID?
     public var lastKnownMode: PersistedDisplayMode?
@@ -46,6 +50,8 @@ public struct DisplayProfile: Codable, Equatable, Sendable, Identifiable {
         brightnessController: BrightnessControllerKind? = nil,
         ddcMinimum: Int? = nil,
         ddcMaximum: Int? = nil,
+        ddcFrameShape: DDC.FrameShape? = nil,
+        ddcTolerateChecksumMismatch: Bool? = nil,
         keyboardTargetEnabled: Bool = true,
         hiDPIProfileID: UUID? = nil,
         lastKnownMode: PersistedDisplayMode? = nil,
@@ -58,6 +64,8 @@ public struct DisplayProfile: Codable, Equatable, Sendable, Identifiable {
         self.brightnessController = brightnessController
         self.ddcMinimum = ddcMinimum
         self.ddcMaximum = ddcMaximum
+        self.ddcFrameShape = ddcFrameShape
+        self.ddcTolerateChecksumMismatch = ddcTolerateChecksumMismatch
         self.keyboardTargetEnabled = keyboardTargetEnabled
         self.hiDPIProfileID = hiDPIProfileID
         self.lastKnownMode = lastKnownMode
