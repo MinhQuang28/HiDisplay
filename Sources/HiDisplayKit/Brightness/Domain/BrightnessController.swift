@@ -40,6 +40,12 @@ public struct BrightnessProbeResult: Sendable {
     /// seconds before its registry attributes and DDC bus answer again. False both for success and
     /// for failures the display itself proved, like answering every read with the null message.
     public var isTransient: Bool
+    /// DDC only: the monitor answered every frame shape with the null message. Steady-state that
+    /// means "no DDC" and is deliberately not transient — but observed on real hardware right after
+    /// a replug, when a monitor's DDC firmware can lag its link by a moment. The coordinator uses
+    /// this to grant exactly one delayed re-probe after a settle, without reclassifying null answers
+    /// as transient everywhere.
+    public var isNullAnswer: Bool
 
     public init(
         isSupported: Bool,
@@ -48,7 +54,8 @@ public struct BrightnessProbeResult: Sendable {
         rawMinimum: UInt16? = nil,
         rawMaximum: UInt16? = nil,
         detail: String = "",
-        isTransient: Bool = false
+        isTransient: Bool = false,
+        isNullAnswer: Bool = false
     ) {
         self.isSupported = isSupported
         self.kind = kind
@@ -57,6 +64,7 @@ public struct BrightnessProbeResult: Sendable {
         self.rawMaximum = rawMaximum
         self.detail = detail
         self.isTransient = isTransient
+        self.isNullAnswer = isNullAnswer
     }
 }
 

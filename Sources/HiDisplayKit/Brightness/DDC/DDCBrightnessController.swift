@@ -61,10 +61,21 @@ public actor DDCBrightnessController: BrightnessController {
     ///
     /// The read itself does send a `Get VCP Feature` frame, which is unavoidable — but it cannot
     /// change what is on screen, which is the property that matters.
+    /// CoreGraphics reports a placeholder display with vendor `'unkn'` (and product `'virt'`) while
+    /// a link renegotiates during replug. It never has a DDC bus, so probing it only burns registry
+    /// scans and fills the log with bind failures and retry ladders for a display that is about to
+    /// vanish.
+    private static let unknownVendorID: UInt32 = 0x756e_6b6e // ASCII 'unkn'
+
     public func probe(display: DisplayDevice) async -> BrightnessProbeResult {
         guard !display.isBuiltIn else {
             return BrightnessProbeResult(
                 isSupported: false, kind: .ddc, detail: "built-in displays have no DDC bus")
+        }
+        guard display.identity.vendorID != Self.unknownVendorID else {
+            return BrightnessProbeResult(
+                isSupported: false, kind: .ddc,
+                detail: "virtual placeholder display (vendor 'unkn') has no DDC bus")
         }
 
         guard let session = session(for: display) else {
@@ -134,7 +145,8 @@ public actor DDCBrightnessController: BrightnessController {
                     let transient = (ddcError?.isRetryable ?? false) || ddcError == .disconnected
                     return (BrightnessProbeResult(
                         isSupported: false, kind: .ddc, detail: "\(error)",
-                        isTransient: transient), false)
+                        isTransient: transient,
+                        isNullAnswer: ddcError == .decode(.nullMessage)), false)
                 }
             }
             let ddcError = error as? DDCError
@@ -143,7 +155,8 @@ public actor DDCBrightnessController: BrightnessController {
             // timeout or I/O error is what a monitor whose I2C is still waking up looks like.
             return (
                 BrightnessProbeResult(
-                    isSupported: false, kind: .ddc, detail: "\(error)", isTransient: retry),
+                    isSupported: false, kind: .ddc, detail: "\(error)", isTransient: retry,
+                    isNullAnswer: ddcError == .decode(.nullMessage)),
                 retry)
         }
     }

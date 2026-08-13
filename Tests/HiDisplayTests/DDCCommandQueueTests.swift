@@ -438,6 +438,30 @@ final class DDCBrightnessControllerRebindTests: XCTestCase {
 
         XCTAssertFalse(result.isSupported)
         XCTAssertFalse(result.isTransient)
+        // Flagged so the coordinator can grant its one post-settle re-probe — real monitors have
+        // answered null right after replug, before their DDC firmware caught up with the link.
+        XCTAssertTrue(result.isNullAnswer)
+    }
+
+    func testVirtualPlaceholderDisplayIsNeverProbed() async {
+        // CoreGraphics reports a vendor-'unkn' placeholder while a link renegotiates. It has no
+        // DDC bus, and probing it burned registry scans and filled the log with bind failures.
+        let binds = BindCounter()
+        let controller = DDCBrightnessController(makeTransport: { _ in
+            _ = binds.next()
+            return FakeDDCTransport()
+        })
+        let placeholder = DisplayDevice(
+            identity: DisplayIdentity(
+                cgDisplayID: 9, vendorID: 0x756e_6b6e, productID: 0x7669_7274,
+                serialNumber: 0, keyTier: .weak),
+            name: "unknown", isBuiltIn: false, isOnline: true, isMain: false)
+
+        let result = await controller.probe(display: placeholder)
+
+        XCTAssertFalse(result.isSupported)
+        XCTAssertFalse(result.isTransient)
+        XCTAssertEqual(binds.value, 0, "no transport bind for a placeholder about to vanish")
     }
 }
 

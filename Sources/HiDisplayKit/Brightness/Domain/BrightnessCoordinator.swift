@@ -247,7 +247,12 @@ public final class BrightnessCoordinator: ObservableObject {
     private func scheduleDDCRetryIfNeeded(
         for display: DisplayDevice, after ddcResult: BrightnessProbeResult, attempt: Int, epoch: Int
     ) {
-        guard !ddcResult.isSupported, ddcResult.isTransient,
+        // A null answer is steady-state "no DDC" and deliberately not transient — except on the
+        // very first probe after a settle or wake, where real hardware (VX2780-2K) has been seen
+        // answering null for both shapes because its DDC firmware lags the link by a moment.
+        // Granting exactly one delayed re-probe covers that; a second null is believed.
+        let nullDeservesOneRetry = ddcResult.isNullAnswer && attempt == 0
+        guard !ddcResult.isSupported, ddcResult.isTransient || nullDeservesOneRetry,
               attempt < Self.ddcRetrySeconds.count else { return }
         let seconds = Self.ddcRetrySeconds[attempt]
         Log.brightness.notice(
