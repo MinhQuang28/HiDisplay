@@ -152,8 +152,11 @@ every value on a 0–255 panel wrong by 2.5×.
 A non-trivial number of monitors compute the reply checksum incorrectly while reporting correct values.
 `decodeReply` rejects a bad checksum by default so line noise cannot be read as a brightness value — but
 `DDCBrightnessController.probe` retries once with `tolerateChecksumMismatch: true` and, if that succeeds,
-remembers the quirk for that display. The returned `Reply` still records `checksumValid: false` so
-diagnostics show why a value is suspect.
+persists the quirk in the profile for that display. On reconnect or wake, the session is seeded with the
+saved tolerance, so the first read does not fail on a monitor already known to miscompute checksums.
+The tolerance follows the latest observation: a valid reply clears it again, because latching true
+forever would let one transient bus glitch permanently disable checksum verification. The returned `Reply`
+still records `checksumValid: false` so diagnostics show why a value is suspect.
 
 ## Throttling
 

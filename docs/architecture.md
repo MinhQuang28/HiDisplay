@@ -118,6 +118,15 @@ presented as a hardware limitation rather than a bug.
 Both timers reset on every reconfiguration callback, so unplugging a dock with three monitors produces
 exactly one settle event.
 
+The enumeration work — IORegistry scans and per-display mode queries — now runs off the main actor for the
+debounced refresh, published back on the main thread. A generation stamp guards every snapshot; the stamp
+is bumped when the world may have moved past an in-flight enumeration (a reconfiguration callback, a
+synchronous `refreshNow()`, `stop()`), so a stale background result is discarded instead of published.
+`refreshNow()` stays synchronous for the paths that read `displays` immediately after the call. When a
+settle fires, if the debounced refresh already saw everything (`needsRefresh` false), the settle reuses
+that list instead of enumerating a second time. If an enumeration is still in flight or superseded, a flag
+marks the settle as pending, and the next snapshot that passes the generation check fires the settle event.
+
 ## Brightness pipeline
 
 ```
@@ -137,6 +146,19 @@ do; nothing in the app selects it.
 
 Concurrency guarantees, each a requirement rather than an optimisation:
 
+- **Per-display probes run concurrently** on settle and wake, since each display owns its own DDC
+  queue and bus — nothing is shared across them. Within one display the probe order stays sequential.
+- **Saved controller overrides are seeded before the probe pass**, so a probe resolves against known
+  overrides instead of re-probing them. In the old order — probe then `setUserOverride` — every display
+  with a saved controller re-probed, consuming two full DDC cycles per settle.
+- **Learned DDC session facts persist in the profile** and seed the next connection: the frame shape
+  (which link format the display answers to), the raw maximum brightness the display reports, and
+  checksum tolerance. On reconnect or wake, the queue starts with the right assumptions instead of
+  re-paying null-message round-trips and failed checksum reads. The facts are starting points, not
+  promises: the queue still re-learns the shape on any null message, and the range is replaced by
+  whatever the first reply reports.
+- **Checksum tolerance follows the latest reply** in both directions: a valid reply clears the flag
+  again, so one bus glitch does not permanently disable verification.
 - **One `DDCCommandQueue` actor per display**, keyed by stable key. A reconnect cannot route one
   monitor's commands into another's queue.
 - **No concurrent I2C to one display.** A single drain loop means one frame on the wire at a time;
