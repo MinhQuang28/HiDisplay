@@ -168,6 +168,18 @@ Concurrency guarantees, each a requirement rather than an optimisation:
 - **Bounded retries, only on transient errors.** `.unsupported` is never retried.
 - **Connection epochs.** Async work is stamped; a probe or restore belonging to a previous connection is
   discarded rather than written into the new one.
+- **Every resolved controller re-asserts the saved brightness.** A probe seeds the UI from what the
+  display reports *now*, and after a wake that is often the monitor's own OSD value — keeping it would
+  silently make the wrong value the new truth. `probeAndChoose` therefore writes the saved value back
+  whenever it differs from the seed. Two exclusions: the re-probe that follows a failed write (which
+  would bounce between probe and write), and a display whose DDC retry is still pending — dimming that
+  one in software for the length of the retry ladder, then undoing it when DDC comes back, is the dark
+  flash on wake the retry exists to avoid.
+- **Wake re-asserts before it probes.** `handleScreensDidWake` writes the saved value on the controller
+  the display already had, then probes. A monitor that woke on its own brightness is corrected by one
+  DDC write instead of waiting out a probe and, when the wake also reconfigures displays, the two-second
+  settle behind it. The optimistic write is allowed to fail — a transport that went stale during sleep
+  is rebound by the probe that follows, which re-asserts the value properly.
 - `setBrightness` returns without waiting for the wire, so a 300 ms monitor does not make the slider
   stutter. Asserted by `testSlowTransportDoesNotBlockTheCaller`.
 
@@ -180,7 +192,7 @@ surprise rather than a rescue. What it fixes is the state the user cannot otherw
 Everything in `Sources/HiDisplay/` is glue and policy; nothing there is testable without a window server,
 which is exactly why nothing there is allowed to hold logic worth testing.
 
-- `AppModel` owns the ordering rules — probe after settle, persist after change, restore after probe —
+- `AppModel` owns the ordering rules — probe after settle, persist after change, re-assert after probe —
   so no view re-derives them. It re-publishes `BrightnessCoordinator.objectWillChange`, because SwiftUI
   does not propagate changes through a nested `ObservableObject` and the asynchronous half of the UI is
   otherwise silently dead.

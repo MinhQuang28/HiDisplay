@@ -12,7 +12,7 @@ import SwiftUI
 @MainActor
 final class AppModel: ObservableObject {
 
-    static let version = "0.6.4"
+    static let version = "0.6.5"
     /// One instance for the process. `AppDelegate` needs to reach the same object the scene shows in
     /// order to tear down shade windows and flush profiles on quit.
     static let shared = AppModel()
@@ -63,6 +63,10 @@ final class AppModel: ObservableObject {
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
+        // Read through the cache rather than the profile actor: the coordinator needs this answer
+        // synchronously, mid-probe, and the cache is refreshed whenever a value is written.
+        brightness.savedBrightnessLookup = { [weak self] key in self?.savedBrightness[key] }
+
         discovery.$displays
             .sink { [weak self] displays in
                 guard let self else { return }
@@ -95,21 +99,15 @@ final class AppModel: ObservableObject {
         // reconfiguration event — the display never "disconnects", so discovery stays quiet while
         // the DDC session underneath is dead. Worse, if a probe ran while the monitor slept, the
         // display downgraded to software dimming, and nothing on that path ever re-probes. Screens
-        // waking is the moment to re-check what every external display can actually do.
+        // waking is the moment to re-check what every external display can actually do, and to put
+        // the user's brightness back on a monitor that woke on its own OSD value.
         NSWorkspace.shared.notificationCenter
             .publisher(for: NSWorkspace.screensDidWakeNotification)
             .sink { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
-                    // Concurrently, same as the settle path: each display has its own queue and
-                    // bus, and waking three monitors serially tripled the time to working sliders.
-                    await withTaskGroup(of: Void.self) { group in
-                        for display in self.displays where !display.isBuiltIn {
-                            group.addTask { @MainActor in
-                                await self.brightness.probeAndChoose(display: display)
-                            }
-                        }
-                    }
+                    await self.brightness.handleScreensDidWake(self.displays)
+                    await self.persistDDCFacts(for: self.displays)
                 }
             }
             .store(in: &cancellables)
@@ -179,15 +177,14 @@ final class AppModel: ObservableObject {
             }
         }
 
-        // Restoration reads the cache rather than the actor: `handleSettledDisplays` needs a
-        // synchronous lookup, and the cache is refreshed whenever a value is written.
-        await brightness.handleSettledDisplays(displays) { [savedBrightness] key in
-            savedBrightness[key]
-        }
+        await brightness.handleSettledDisplays(displays)
+        await persistDDCFacts(for: displays)
+    }
 
-        // Persist what the probes just learned. Settle is the one moment this is fresh and cheap;
-        // a frame shape that flips mid-session (an OSD toggle) is picked up at the next settle or
-        // wake, which is when it matters again.
+    /// Persists what the probes just learned. Settle and wake are the moments this is fresh and
+    /// cheap; a frame shape that flips mid-session (an OSD toggle) is picked up at the next one,
+    /// which is when it matters again.
+    private func persistDDCFacts(for displays: [DisplayDevice]) async {
         for display in displays where brightness.controller(for: display.id) == .ddc {
             if let facts = await brightness.ddcFacts(for: display.id) {
                 await profiles.setDDCFacts(facts, for: display)

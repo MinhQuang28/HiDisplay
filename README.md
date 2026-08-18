@@ -66,8 +66,11 @@ software. HiDisplay shows it in the menu for its resolution picker and nothing e
 - Works on monitors with no DDC at all, via gamma or a shade overlay.
 - **Reset Dimming** is always one click away in the menu, never behind a submenu — that is the command you
   need when the screen is too dark to navigate.
-- Brightness is remembered per monitor and restored on reconnect, after a grace period so a display that
-  isn't ready yet doesn't get a burst of failed commands.
+- Brightness is remembered per monitor and re-asserted on reconnect and on wake, so a monitor that comes
+  back on its own OSD brightness is put back where you left it instead of the app adopting that value.
+- **No dimming flash on wake.** While a just-woken monitor's DDC bus is still coming up, the app holds off
+  rather than dimming it with gamma or an overlay it is about to stop using — the couple of seconds of
+  visibly-too-dark screen that used to correct itself once DDC answered.
 - **F1 and F2 can drive the external display.** macOS sends them to the built-in panel only. Turn the tap
   on and they adjust whichever display you mean — under the pointer, the main one, or all of them — with
   an on-screen indicator. A press that concerns the built-in panel is passed straight through, so macOS

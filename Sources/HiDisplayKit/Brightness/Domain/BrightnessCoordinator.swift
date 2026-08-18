@@ -32,6 +32,12 @@ public final class BrightnessCoordinator: ObservableObject {
 
     private var userOverrides: [String: BrightnessControllerKind] = [:]
     private var chosen: [String: BrightnessControllerKind] = [:]
+    /// The user's saved brightness for a display key, supplied by the app.
+    ///
+    /// Every path that resolves a controller re-asserts this value, so the app never adopts whatever
+    /// a display happens to report — a monitor that comes back from sleep on its own OSD brightness
+    /// would otherwise make that wrong value the new truth.
+    public var savedBrightnessLookup: ((String) -> Float?)?
     /// Monotonic per-display counter. Async work stamped with an old value is discarded, which is how
     /// a probe or restore belonging to a previous connection is prevented from writing into the new
     /// one — the failure mode where unplugging and replugging mid-probe applies a stale brightness.
@@ -84,9 +90,7 @@ public final class BrightnessCoordinator: ObservableObject {
     ///
     /// Called from `DisplayDiscoveryService.settled` rather than on every reconfiguration callback,
     /// because a display often appears before its DDC bus answers.
-    public func handleSettledDisplays(
-        _ displays: [DisplayDevice], restore: @escaping @Sendable (String) -> Float?
-    ) async {
+    public func handleSettledDisplays(_ displays: [DisplayDevice]) async {
         let liveKeys = Set(displays.map(\.id))
 
         // Tear down anything that left, before probing what arrived: a departed display's queue must
@@ -107,14 +111,50 @@ public final class BrightnessCoordinator: ObservableObject {
         await withTaskGroup(of: Void.self) { group in
             for display in displays {
                 group.addTask { @MainActor [weak self] in
-                    guard let self else { return }
-                    await self.probeAndChoose(display: display)
-                    if let saved = restore(display.id) {
-                        await self.setBrightness(saved, for: display)
-                    }
+                    await self?.probeAndChoose(display: display)
                 }
             }
         }
+    }
+
+    /// Handles screens waking, which is not a display reconfiguration and produces no settle.
+    ///
+    /// Two things happen, in this order, and the order is the point. The saved value is re-asserted
+    /// first, on the controller the display already had: a monitor that came back on its own OSD
+    /// brightness is then corrected by one DDC write, instead of staying wrong until a probe — and,
+    /// when the wake does reconfigure displays, the two-second settle behind it — has finished. That
+    /// gap is what the user sees as the screen waking too bright or too dark and snapping back a
+    /// moment later. Then the display is re-probed, because a sleep/wake can swap the IOAVService
+    /// underneath a live session without any display ever disconnecting.
+    public func handleScreensDidWake(_ displays: [DisplayDevice]) async {
+        // Concurrently, same as the settle path: each display has its own queue and bus, and waking
+        // three monitors serially tripled the time to working sliders.
+        await withTaskGroup(of: Void.self) { group in
+            for display in displays where !display.isBuiltIn {
+                group.addTask { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.reassertSavedBrightnessOptimistically(for: display)
+                    await self.probeAndChoose(display: display)
+                }
+            }
+        }
+    }
+
+    /// Writes the saved value on the controller chosen before the sleep, without waiting for a probe.
+    ///
+    /// Fire-and-forget on purpose. The transport may have gone stale while the monitor slept, in
+    /// which case this write fails silently — and the probe that follows rebinds it and re-asserts
+    /// the value properly. Nothing is lost by trying first, and on the common path where the session
+    /// survived, the correction lands before the panel has finished lighting up.
+    private func reassertSavedBrightnessOptimistically(for display: DisplayDevice) async {
+        guard let kind = chosen[display.id], let saved = savedBrightnessLookup?(display.id) else {
+            return
+        }
+        states[display.id] = BrightnessState(
+            requestedValue: saved, effectiveValue: saved, controller: kind)
+        // Errors are swallowed rather than re-probed here: the probe this returns into is that
+        // recovery already, and running a second one would put a redundant read on the bus.
+        try? await controllerInstance(kind).setBrightness(saved, display: display)
     }
 
     public func handleDisplaysChanged(_ displays: [DisplayDevice]) {
@@ -148,7 +188,12 @@ public final class BrightnessCoordinator: ObservableObject {
         await probeAndChoose(display: display, ddcRetryAttempt: 0)
     }
 
-    private func probeAndChoose(display: DisplayDevice, ddcRetryAttempt: Int) async {
+    /// - Parameter reassertSaved: false only on the re-probe that follows a failed write, where
+    ///   putting the value back would call straight into the write that just failed and could
+    ///   bounce between the two indefinitely.
+    private func probeAndChoose(
+        display: DisplayDevice, ddcRetryAttempt: Int, reassertSaved: Bool = true
+    ) async {
         let epoch = bumpEpoch(for: display.id)
 
         // A built-in panel is not probed at all. Probing it would mean reading, and eventually
@@ -217,24 +262,44 @@ public final class BrightnessCoordinator: ObservableObject {
             warnings.removeValue(forKey: display.id)
         }
 
-        // Seed the UI from whatever the chosen controller reported, so the slider starts at the
-        // display's real brightness instead of jumping when first touched.
-        let seed: Float
-        switch decision.kind {
-        case .native: seed = nativeResult.currentValue ?? 1.0
-        case .ddc: seed = ddcResult.currentValue ?? 1.0
-        case .gamma: seed = gammaResult.currentValue ?? 1.0
-        case .shade: seed = shadeResult.currentValue ?? 1.0
-        case nil: seed = 1.0
-        }
-        states[display.id] = BrightnessState(
-            requestedValue: seed, effectiveValue: seed, controller: decision.kind ?? .shade)
-
         Log.brightness.debug(
             "\(display.id, privacy: .public): controller=\(decision.kind?.rawValue ?? "none", privacy: .public)")
 
-        scheduleDDCRetryIfNeeded(
+        // Armed before anything is shown or written, because a pending retry means this display's
+        // controller is provisional — it is on a software fallback only until the monitor's DDC bus
+        // finishes waking — and both of the steps below depend on knowing that.
+        let retryPending = scheduleDDCRetryIfNeeded(
             for: display, after: ddcResult, attempt: ddcRetryAttempt, epoch: epoch)
+
+        // What the chosen controller reported, so a display with no saved value starts the slider at
+        // its real brightness instead of jumping when first touched.
+        let probed: Float
+        switch decision.kind {
+        case .native: probed = nativeResult.currentValue ?? 1.0
+        case .ddc: probed = ddcResult.currentValue ?? 1.0
+        case .gamma: probed = gammaResult.currentValue ?? 1.0
+        case .shade: probed = shadeResult.currentValue ?? 1.0
+        case nil: probed = 1.0
+        }
+        let saved = savedBrightnessLookup?(display.id)
+        // A provisional controller reports the brightness of a controller the display is about to
+        // stop using — 100% from an unapplied shade, say — so showing it would bounce the slider to
+        // full and back for the length of the retry ladder.
+        let shown = (retryPending ? saved : nil) ?? probed
+        states[display.id] = BrightnessState(
+            requestedValue: shown, effectiveValue: shown, controller: decision.kind ?? .shade)
+
+        // Put the user's value back rather than keeping what the probe read. That reading is what the
+        // display reports *now*, which after a wake or a reconnect is often the monitor's own OSD
+        // brightness — adopting it silently discards the value the user set.
+        //
+        // Not while a retry is pending: dimming a provisional display with a gamma ramp or a shade
+        // window for the length of the retry ladder, then undoing it when DDC comes back, is exactly
+        // the flash on wake this is meant to remove. Not either when the display already holds the
+        // saved value, so a settle does not put a pointless write on every monitor's bus.
+        guard reassertSaved, !retryPending, decision.kind != nil,
+              let saved, abs(saved - probed) > 0.0005 else { return }
+        await setBrightness(saved, for: display)
     }
 
     /// Re-probes after a transient DDC failure instead of leaving the display on software dimming
@@ -244,16 +309,18 @@ public final class BrightnessCoordinator: ObservableObject {
     /// re-registration and loses — the bind finds no matching display unit, or the bound transport
     /// times out against an I2C bus that is not answering yet — and without a retry the downgrade to
     /// software dimming is permanent, because nothing else ever probes DDC again.
+    /// - Returns: true when a re-probe was armed, so the caller knows this display's controller is
+    ///   provisional and must not be dimmed in software yet.
     private func scheduleDDCRetryIfNeeded(
         for display: DisplayDevice, after ddcResult: BrightnessProbeResult, attempt: Int, epoch: Int
-    ) {
+    ) -> Bool {
         // A null answer is steady-state "no DDC" and deliberately not transient — except on the
         // very first probe after a settle or wake, where real hardware (VX2780-2K) has been seen
         // answering null for both shapes because its DDC firmware lags the link by a moment.
         // Granting exactly one delayed re-probe covers that; a second null is believed.
         let nullDeservesOneRetry = ddcResult.isNullAnswer && attempt == 0
         guard !ddcResult.isSupported, ddcResult.isTransient || nullDeservesOneRetry,
-              attempt < Self.ddcRetrySeconds.count else { return }
+              attempt < Self.ddcRetrySeconds.count else { return false }
         let seconds = Self.ddcRetrySeconds[attempt]
         Log.brightness.notice(
             "\(display.id, privacy: .public): DDC probe failed transiently (\(ddcResult.detail, privacy: .public)); retrying in \(seconds)s (attempt \(attempt + 1)/\(Self.ddcRetrySeconds.count))")
@@ -262,6 +329,7 @@ public final class BrightnessCoordinator: ObservableObject {
             guard let self, self.isCurrent(epoch: epoch, for: display.id) else { return }
             await self.probeAndChoose(display: display, ddcRetryAttempt: attempt + 1)
         }
+        return true
     }
 
     // MARK: - Setting
@@ -285,7 +353,7 @@ public final class BrightnessCoordinator: ObservableObject {
             // A hardware controller that starts failing mid-session (monitor asleep, cable pulled) is
             // re-probed so the app drops to a working fallback rather than silently doing nothing.
             if kind.isHardware {
-                await probeAndChoose(display: display)
+                await probeAndChoose(display: display, ddcRetryAttempt: 0, reassertSaved: false)
             }
         }
     }
