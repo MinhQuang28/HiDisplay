@@ -171,10 +171,21 @@ Concurrency guarantees, each a requirement rather than an optimisation:
 - **Every resolved controller re-asserts the saved brightness.** A probe seeds the UI from what the
   display reports *now*, and after a wake that is often the monitor's own OSD value — keeping it would
   silently make the wrong value the new truth. `probeAndChoose` therefore writes the saved value back
-  whenever it differs from the seed. Two exclusions: the re-probe that follows a failed write (which
-  would bounce between probe and write), and a display whose DDC retry is still pending — dimming that
-  one in software for the length of the retry ladder, then undoing it when DDC comes back, is the dark
-  flash on wake the retry exists to avoid.
+  whenever it differs from the seed. Three exclusions: the re-probe that follows a failed write (which
+  would bounce between probe and write), a display whose DDC retry is still pending, and a display
+  held for DDC — dimming either of those in software, then undoing it when DDC comes back, is the
+  dark flash on wake (and the bright flash at boot) the retry and the hold exist to avoid.
+- **DDC evidence outweighs an early failure.** Seeded session facts, or a successful DDC probe this
+  session, prove the monitor speaks DDC. On such a display a null answer stays on the retry ladder to
+  its end (instead of being believed after one retry), and even an exhausted ladder leaves the display
+  *held* — showing the saved value, applying no software dimming — until a later settle or wake probe
+  finds DDC again. This is the cold-boot fix: monitor firmware can lag the link by tens of seconds at
+  power-on, and believing its nulls downgraded a known-DDC monitor to gamma, double-dimmed it with the
+  saved value, then snapped visibly bright when a later probe lifted the ramp. A display with no DDC
+  history keeps today's fast downgrade, and an explicit user override to a software controller is
+  honoured over the evidence. A hold is not a dead end: besides the next settle or wake, a user
+  brightness action on a held display triggers one re-probe — the software write still lands so the
+  user sees a response, and the probe either hands control back to DDC or re-enters the hold.
 - **Wake re-asserts before it probes.** `handleScreensDidWake` writes the saved value on the controller
   the display already had, then probes. A monitor that woke on its own brightness is corrected by one
   DDC write instead of waiting out a probe and, when the wake also reconfigures displays, the two-second

@@ -42,6 +42,16 @@ public final class BrightnessCoordinator: ObservableObject {
     /// a probe or restore belonging to a previous connection is prevented from writing into the new
     /// one — the failure mode where unplugging and replugging mid-probe applies a stale brightness.
     private var connectionEpoch: [String: Int] = [:]
+    /// Display keys with proof of working DDC: persisted session facts seeded at settle, or a DDC
+    /// probe that succeeded this session. Evidence changes how failure is read — on a monitor known
+    /// to speak DDC, a null answer or an exhausted retry ladder means "still booting", not "no DDC",
+    /// so the display is never downgraded to software dimming it would visibly flash out of later.
+    private var ddcEvidence: Set<String> = []
+    /// Displays currently *held* for DDC: evidence says the monitor speaks DDC, the last probe
+    /// failed anyway, and no software dimming has been applied. Kept as state rather than re-derived
+    /// because two other paths need the answer: the wake reassert must not dim a held display, and a
+    /// user brightness action on one is the recovery trigger — see `setBrightness`.
+    private var heldForDDC: Set<String> = []
 
     public init() {}
 
@@ -72,7 +82,11 @@ public final class BrightnessCoordinator: ObservableObject {
     }
 
     /// Hands persisted DDC session facts to the DDC controller, ahead of the session being created.
+    ///
+    /// Facts only ever exist for a display whose DDC answered in a previous session, so seeding them
+    /// is also the evidence that makes probe failures read as transient — see `ddcEvidence`.
     public func seedDDCFacts(_ facts: DDCSessionFacts, for key: String) async {
+        ddcEvidence.insert(key)
         await ddc.seedFacts(facts, for: key)
     }
 
@@ -101,6 +115,7 @@ public final class BrightnessCoordinator: ObservableObject {
             availability.removeValue(forKey: key)
             warnings.removeValue(forKey: key)
             chosen.removeValue(forKey: key)
+            heldForDDC.remove(key)
         }
         await ddc.invalidateAll(except: liveKeys)
 
@@ -150,6 +165,10 @@ public final class BrightnessCoordinator: ObservableObject {
         guard let kind = chosen[display.id], let saved = savedBrightnessLookup?(display.id) else {
             return
         }
+        // A software controller on a held display is a hold, not a choice — see `probeAndChoose`.
+        // Optimistically dimming it here would apply the software dim the hold exists to avoid; the
+        // probe this returns into re-asserts the value once DDC answers.
+        if heldForDDC.contains(display.id) { return }
         states[display.id] = BrightnessState(
             requestedValue: saved, effectiveValue: saved, controller: kind)
         // Errors are swallowed rather than re-probed here: the probe this returns into is that
@@ -181,8 +200,11 @@ public final class BrightnessCoordinator: ObservableObject {
     /// Backoff before each DDC re-probe after a transient failure. The settled callback fires while a
     /// just-woken monitor may still be re-registering its attributes and waking its I2C bus; these
     /// bounded attempts cover that window without polling forever, and any newer probe or a
-    /// disconnect cancels them through the epoch check.
-    private static let ddcRetrySeconds = [2, 5, 10]
+    /// disconnect cancels them through the epoch check. The 20s tail exists for login after a cold
+    /// boot, where the app's first probe races monitor firmware that takes far longer to bring its
+    /// DDC up than a wake does — each attempt is one read on an otherwise idle bus, so the extra
+    /// step costs nothing when the earlier ones succeed.
+    private static let ddcRetrySeconds = [2, 5, 10, 20]
 
     public func probeAndChoose(display: DisplayDevice) async {
         await probeAndChoose(display: display, ddcRetryAttempt: 0)
@@ -229,6 +251,8 @@ public final class BrightnessCoordinator: ObservableObject {
             return
         }
 
+        if ddcResult.isSupported { ddcEvidence.insert(display.id) }
+
         let found = ControllerAvailability(
             native: nativeResult.isSupported,
             ddc: ddcResult.isSupported,
@@ -271,6 +295,24 @@ public final class BrightnessCoordinator: ObservableObject {
         let retryPending = scheduleDDCRetryIfNeeded(
             for: display, after: ddcResult, attempt: ddcRetryAttempt, epoch: epoch)
 
+        // A display with DDC evidence whose probe failed anyway is treated as provisional even after
+        // the retry ladder runs dry. The alternative was the flash seen at cold boot: monitor
+        // firmware outlasts the ladder, the display downgrades to gamma, the saved value dims it in
+        // software *on top of* a backlight that already holds that value — and when a later settle
+        // finds DDC again, lifting the ramp snaps the screen visibly bright. Holding means the
+        // monitor keeps showing its own (correct) backlight value and the next settle or wake probe
+        // picks DDC back up. An explicit user override to a *software* controller is honoured over
+        // the evidence — the user chose that dimming, and skipping it would make the override do
+        // nothing. An override to DDC holds like no override does: the user wants hardware control,
+        // not a gamma stand-in.
+        let holdingForDDC = !ddcResult.isSupported && ddcEvidence.contains(display.id)
+            && userOverrides[display.id]?.isHardware != false
+        if holdingForDDC {
+            heldForDDC.insert(display.id)
+        } else {
+            heldForDDC.remove(display.id)
+        }
+
         // What the chosen controller reported, so a display with no saved value starts the slider at
         // its real brightness instead of jumping when first touched.
         let probed: Float
@@ -285,7 +327,7 @@ public final class BrightnessCoordinator: ObservableObject {
         // A provisional controller reports the brightness of a controller the display is about to
         // stop using — 100% from an unapplied shade, say — so showing it would bounce the slider to
         // full and back for the length of the retry ladder.
-        let shown = (retryPending ? saved : nil) ?? probed
+        let shown = ((retryPending || holdingForDDC) ? saved : nil) ?? probed
         states[display.id] = BrightnessState(
             requestedValue: shown, effectiveValue: shown, controller: decision.kind ?? .shade)
 
@@ -293,11 +335,11 @@ public final class BrightnessCoordinator: ObservableObject {
         // display reports *now*, which after a wake or a reconnect is often the monitor's own OSD
         // brightness — adopting it silently discards the value the user set.
         //
-        // Not while a retry is pending: dimming a provisional display with a gamma ramp or a shade
-        // window for the length of the retry ladder, then undoing it when DDC comes back, is exactly
-        // the flash on wake this is meant to remove. Not either when the display already holds the
-        // saved value, so a settle does not put a pointless write on every monitor's bus.
-        guard reassertSaved, !retryPending, decision.kind != nil,
+        // Not while a retry is pending or the display is held for DDC: dimming a provisional display
+        // with a gamma ramp or a shade window, then undoing it when DDC comes back, is exactly the
+        // flash on wake and boot this is meant to remove. Not either when the display already holds
+        // the saved value, so a settle does not put a pointless write on every monitor's bus.
+        guard reassertSaved, !retryPending, !holdingForDDC, decision.kind != nil,
               let saved, abs(saved - probed) > 0.0005 else { return }
         await setBrightness(saved, for: display)
     }
@@ -317,9 +359,14 @@ public final class BrightnessCoordinator: ObservableObject {
         // A null answer is steady-state "no DDC" and deliberately not transient — except on the
         // very first probe after a settle or wake, where real hardware (VX2780-2K) has been seen
         // answering null for both shapes because its DDC firmware lags the link by a moment.
-        // Granting exactly one delayed re-probe covers that; a second null is believed.
-        let nullDeservesOneRetry = ddcResult.isNullAnswer && attempt == 0
-        guard !ddcResult.isSupported, ddcResult.isTransient || nullDeservesOneRetry,
+        // Granting exactly one delayed re-probe covers that; a second null is believed — unless the
+        // display has DDC evidence. At login after a cold boot the same hardware answers null for
+        // well past one retry, and believing it there downgraded a known-DDC monitor to software
+        // dimming for the whole session. Evidence keeps a null on the ladder to the end; a display
+        // that never spoke DDC still gets today's fast answer.
+        let nullDeservesRetry = ddcResult.isNullAnswer
+            && (attempt == 0 || ddcEvidence.contains(display.id))
+        guard !ddcResult.isSupported, ddcResult.isTransient || nullDeservesRetry,
               attempt < Self.ddcRetrySeconds.count else { return false }
         let seconds = Self.ddcRetrySeconds[attempt]
         Log.brightness.notice(
@@ -343,9 +390,21 @@ public final class BrightnessCoordinator: ObservableObject {
         states[display.id] = BrightnessState(
             requestedValue: clamped, effectiveValue: clamped, controller: kind)
 
+        // A user action on a held display doubles as the recovery trigger: past the retry ladder,
+        // nothing else re-probes DDC until a settle or a wake, which a desk that never sleeps may
+        // not produce for hours. The write below still goes through the software controller — the
+        // user gets immediate feedback — and the probe then either moves control back to DDC
+        // (resetting the software dim and re-asserting this value on the backlight) or, still
+        // failing, re-enters the hold. One-shot by the `remove`: a drag's stream of values does not
+        // become a stream of probes.
+        let wasHeld = heldForDDC.remove(display.id) != nil
+
         let epoch = connectionEpoch[display.id] ?? 0
         do {
             try await controllerInstance(kind).setBrightness(clamped, display: display)
+            if wasHeld, !kind.isHardware, isCurrent(epoch: epoch, for: display.id) {
+                await probeAndChoose(display: display)
+            }
         } catch {
             guard isCurrent(epoch: epoch, for: display.id) else { return }
             Log.brightness.notice(
