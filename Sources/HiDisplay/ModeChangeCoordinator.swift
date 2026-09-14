@@ -58,7 +58,7 @@ enum ModeChangeCoordinator {
         alert.addButton(withTitle: "Keep")
         alert.addButton(withTitle: "Revert")
 
-        func text(_ remaining: Int) -> String {
+        @Sendable func text(_ remaining: Int) -> String {
             """
             \(displayName) is now \(newMode.displayLabel).
 
@@ -68,12 +68,14 @@ enum ModeChangeCoordinator {
         alert.informativeText = text(revertAfter)
 
         // An accessory app has no windows and would otherwise show this behind whatever is frontmost.
-        NSApp.activateCompat()
+        NSApp.activate()
 
         var remaining = revertAfter
         let timer = Timer(timeInterval: 1, repeats: true) { timer in
             // A timer added to the main run loop fires on the main thread, so this isolation holds —
-            // the compiler just cannot see it through the nonisolated closure type.
+            // the compiler just cannot see it through the nonisolated closure type. The same goes
+            // for the timer itself: it is only ever touched on this thread.
+            nonisolated(unsafe) let timer = timer
             MainActor.assumeIsolated {
                 remaining -= 1
                 if remaining <= 0 {

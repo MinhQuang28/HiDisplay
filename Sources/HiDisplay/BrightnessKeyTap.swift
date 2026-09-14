@@ -35,7 +35,9 @@ final class BrightnessKeyTap {
 
     /// Shows the system permission prompt. Harmless to call when already trusted.
     static func requestAccessibility() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        // The literal rather than `kAXTrustedCheckOptionPrompt`: that global is a mutable C var the
+        // concurrency checker cannot prove safe, and its value is this fixed string.
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
     }
 
@@ -146,7 +148,10 @@ private let brightnessTapCallback: CGEventTapCallBack = { _, type, event, userIn
     }
 
     // Event taps are delivered on the thread that registered the run-loop source, which is main here.
-    return MainActor.assumeIsolated {
-        tap.handle(event).map { Unmanaged.passUnretained($0) }
-    }
+    // `CGEvent` is not Sendable, so the checker cannot see that the event never leaves this thread;
+    // the pointer crosses the isolation boundary instead of the object.
+    // `handle` only ever returns the same event or nil, so a Bool is all that has to cross.
+    nonisolated(unsafe) let unsafeEvent = event
+    let consumed: Bool = MainActor.assumeIsolated { tap.handle(unsafeEvent) == nil }
+    return consumed ? nil : Unmanaged.passUnretained(event)
 }

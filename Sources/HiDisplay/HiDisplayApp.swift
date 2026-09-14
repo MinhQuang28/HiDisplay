@@ -1,7 +1,7 @@
 import HiDisplayKit
 import SwiftUI
 
-/// HiDisplay — menu-bar HiDPI and brightness control for macOS 13+.
+/// HiDisplay — menu-bar HiDPI and brightness control for macOS 14+.
 ///
 /// Original codebase. Public APIs throughout, except for the two documented private-API shims in
 /// `HiDisplayKit/PlatformShims`, which are required for DDC and native brightness on Apple Silicon and
@@ -29,7 +29,11 @@ struct HiDisplayApp: App {
 }
 
 /// Menu-bar accessory lifecycle.
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+
+    private var terminationStarted = false
+    private var terminationReplied = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // menu bar only, no Dock icon
@@ -39,15 +43,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Software dimming must not outlive the app.
+    /// Software dimming must not outlive the app, and the profile flush must finish before exit.
     ///
     /// CoreGraphics reverts gamma when a process dies, so a crash is already covered — but a clean quit
     /// is fast enough that the display would visibly stay dim for a moment without this, and a shade
-    /// window is not reverted by the OS at all.
-    func applicationWillTerminate(_ notification: Notification) {
-        MainActor.assumeIsolated {
-            AppModel.shared.stop()
+    /// window is not reverted by the OS at all. `applicationWillTerminate` is synchronous and the
+    /// process exits the moment it returns, so the async cleanup runs here under `.terminateLater`
+    /// and the app replies once it is done.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // AppKit does not de-duplicate `terminate:`. A second ⌘Q while the flush is running must
+        // not reply early; one reply for the first request ends the process for both.
+        guard !terminationStarted else { return .terminateLater }
+        terminationStarted = true
+        Task {
+            await AppModel.shared.stop()
+            Log.app.notice("HiDisplay terminating")
+            replyToTermination(sender)
         }
-        Log.app.notice("HiDisplay terminating")
+        // A stalled volume must not turn Quit into Force Quit: the flush is uncancellable, so the
+        // bound is a second task racing it rather than a cancellation. (A task group cannot do this;
+        // it awaits every child, including the one that cannot be cancelled.)
+        Task {
+            try? await Task.sleep(for: .seconds(3))
+            if !terminationReplied { Log.app.error("profile flush did not finish in 3 s; quitting anyway") }
+            replyToTermination(sender)
+        }
+        return .terminateLater
+    }
+
+    private func replyToTermination(_ app: NSApplication) {
+        guard !terminationReplied else { return }
+        terminationReplied = true
+        app.reply(toApplicationShouldTerminate: true)
     }
 }

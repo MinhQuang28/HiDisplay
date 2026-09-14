@@ -6,32 +6,20 @@ struct MenuContent: View {
 
     @EnvironmentObject private var model: AppModel
 
+    @Environment(\.openSettings) private var openSettings
+
     /// Opens the `Settings` scene.
     ///
-    /// `SettingsLink` is the only reliable route from inside a `MenuBarExtra`. The obvious
-    /// `NSApp.sendAction(Selector(("showSettingsWindow:")))` silently does nothing here: an accessory
-    /// app has no key window, so the action finds no target in the responder chain and the button
-    /// appears dead — which is exactly how it behaved before this was fixed.
-    ///
-    /// `SettingsLink` is macOS 14+, so the selector remains as the fallback for the 13 deployment
-    /// target. It also activates the app first, without which the Settings window can open behind
-    /// whatever is frontmost.
-    @ViewBuilder
+    /// The obvious `NSApp.sendAction(Selector(("showSettingsWindow:")))` silently does nothing from
+    /// inside a `MenuBarExtra`: an accessory app has no key window, so the action finds no target in
+    /// the responder chain and the button appears dead. The app is activated first, without which
+    /// the Settings window can open behind whatever is frontmost.
     private var settingsButton: some View {
-        if #available(macOS 14.0, *) {
-            SettingsLink { Text("Settings…") }
-                .keyboardShortcut(",", modifiers: .command)
-                .simultaneousGesture(TapGesture().onEnded {
-                    NSApp.activateCompat()
-                })
-        } else {
-            Button("Settings…") {
-                NSApp.activateCompat()
-                if NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) { return }
-                NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
-            }
-            .keyboardShortcut(",", modifiers: .command)
+        Button("Settings…") {
+            NSApp.activate()
+            openSettings()
         }
+        .keyboardShortcut(",", modifiers: .command)
     }
 
     var body: some View {

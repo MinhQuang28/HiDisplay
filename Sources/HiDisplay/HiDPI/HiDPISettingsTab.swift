@@ -144,7 +144,7 @@ struct HiDPISettingsTab: View {
             // one, and the selected display disappearing — in which case `display` silently falls
             // back to the first eligible one, and choices staged for the old panel must not carry
             // over to it. (The picker's setter used to reset inline, which covered only the first.)
-            .onChangeCompat(of: display?.id) { resetStagingForDisplayChange() }
+            .onChange(of: display?.id) { _, _ in resetStagingForDisplayChange() }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
@@ -284,7 +284,7 @@ struct HiDPISettingsTab: View {
         }
         HStack(spacing: 10) {
             Toggle("Show every step", isOn: $showFullLadder)
-                .onChangeCompat(of: showFullLadder) { chosen.removeAll() }
+                .onChange(of: showFullLadder) { _, _ in chosen.removeAll() }
             Spacer()
             Button("Select all (\(usable.count))") {
                 chosen.formUnion(usable.map(\.id))

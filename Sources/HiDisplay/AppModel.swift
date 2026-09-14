@@ -12,7 +12,7 @@ import SwiftUI
 @MainActor
 final class AppModel: ObservableObject {
 
-    static let version = "0.6.5"
+    static let version = "0.7.0"
     /// One instance for the process. `AppDelegate` needs to reach the same object the scene shows in
     /// order to tear down shade windows and flush profiles on quit.
     static let shared = AppModel()
@@ -26,6 +26,7 @@ final class AppModel: ObservableObject {
     /// Last diagnostics export path, shown in Settings after an export.
     @Published var lastExportPath: String?
     @Published var lastError: String?
+    private var stopped = false
 
     // MARK: Brightness keys
 
@@ -39,7 +40,7 @@ final class AppModel: ObservableObject {
 
     private let keyTap = BrightnessKeyTap()
     private let osd = BrightnessOSD()
-    private var permissionTimer: Timer?
+    private var permissionWatch: Task<Void, Never>?
 
     /// App-level preferences live in UserDefaults rather than the profile store: they are not
     /// per-display, and they must be readable before any display has been enumerated.
@@ -145,23 +146,20 @@ final class AppModel: ObservableObject {
         await handleSettled(discovery.displays)
     }
 
-    func stop() {
+    /// Clean-quit cleanup. Idempotent, because `applicationShouldTerminate` awaits it and holds
+    /// termination open until it returns; a second call must not tear anything down twice.
+    func stop() async {
+        guard !stopped else { return }
+        stopped = true
         osd.hide()
         keyTap.stop()
-        permissionTimer?.invalidate()
+        permissionWatch?.cancel()
         discovery.stop()
         brightness.prepareForQuit()
-        // `applicationWillTerminate` is synchronous and the process exits the moment it returns, so
-        // a fire-and-forget Task here almost never ran — any change still inside the save debounce
-        // was lost on quit. Block for the flush instead, bounded so a wedged disk cannot hang
-        // quitting. Detached on purpose: a plain Task would inherit the main actor this method
-        // blocks, which is a deadlock.
-        let flushed = DispatchSemaphore(value: 0)
-        Task.detached { [profiles] in
-            await profiles.flush()
-            flushed.signal()
-        }
-        _ = flushed.wait(timeout: .now() + 2)
+        // Any change still inside the save debounce is lost without this. It used to block the
+        // main thread on a semaphore from `applicationWillTerminate`; the delegate now replies
+        // `.terminateLater` and lets the flush finish properly.
+        await profiles.flush()
     }
 
     private func handleSettled(_ displays: [DisplayDevice]) async {
@@ -284,7 +282,7 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(enabled, forKey: DefaultsKey.keysEnabled)
         guard enabled else {
             keyTap.stop()
-            permissionTimer?.invalidate()
+            permissionWatch?.cancel()
             return
         }
         if !keyTap.start() {
@@ -301,19 +299,20 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(target.rawValue, forKey: DefaultsKey.keyTarget)
     }
 
+    /// Polls once a second until Accessibility is granted, then starts the tap. A main-actor task
+    /// rather than a `Timer`: it cancels cleanly and needs no isolation assumptions.
     private func startWatchingForPermission() {
-        permissionTimer?.invalidate()
-        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] timer in
-            MainActor.assumeIsolated {
-                guard let self else { return timer.invalidate() }
+        permissionWatch?.cancel()
+        permissionWatch = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, !Task.isCancelled else { return }
                 self.isAccessibilityTrusted = BrightnessKeyTap.isAccessibilityTrusted
-                guard self.isAccessibilityTrusted else { return }
-                timer.invalidate()
+                guard self.isAccessibilityTrusted else { continue }
                 if self.brightnessKeysEnabled { self.keyTap.start() }
+                return
             }
         }
-        RunLoop.main.add(timer, forMode: .common)
-        permissionTimer = timer
     }
 
     /// Applies a brightness key press.

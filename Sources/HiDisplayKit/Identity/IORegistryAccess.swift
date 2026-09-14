@@ -73,11 +73,26 @@ public enum IORegistryAccess {
         property(service, key) as? Data
     }
 
+    /// Reads a string property off `service`'s immediate parent in the IOService plane, releasing the
+    /// parent on every path.
+    ///
+    /// Needed to detect the MCDP29xx USB-C↔DisplayPort bridge: it announces itself via
+    /// `EPICProviderClass` on the *parent* of the bound `DCPAVServiceProxy`, not on that node itself
+    /// (technique from m1ddc's `isMCDP29XXProxy()`).
+    public static func parentStringProperty(_ service: io_service_t, _ key: String) -> String? {
+        var parent: io_registry_entry_t = 0
+        guard IORegistryEntryGetParentEntry(service, kIOServicePlane, &parent) == KERN_SUCCESS, parent != 0
+        else { return nil }
+        defer { IOObjectRelease(parent) }
+        return stringProperty(parent, key)
+    }
+
     public static func name(_ service: io_service_t) -> String? {
         // io_name_t is a fixed 128-byte C buffer.
         var buffer = [CChar](repeating: 0, count: 128)
         guard IORegistryEntryGetName(service, &buffer) == KERN_SUCCESS else { return nil }
-        return String(cString: buffer)
+        let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     /// Walks up the IOService plane looking for the display unit this node belongs to, and returns its

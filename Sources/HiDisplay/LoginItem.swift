@@ -5,7 +5,7 @@ import ServiceManagement
 /// Launch at login, via `SMAppService`.
 ///
 /// `SMLoginItemSetEnabled` and the old shared-file-list route are both deprecated; `SMAppService` is
-/// the supported API from macOS 13, which is this app's deployment target — one of the reasons that
+/// the supported API from macOS 13, below this app's deployment target — one of the reasons that
 /// target was chosen.
 ///
 /// The subtlety worth knowing: registration can succeed and still not run, because the user is allowed

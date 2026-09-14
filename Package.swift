@@ -6,24 +6,24 @@ import PackageDescription
 // full IDE support. The runnable .app bundle is assembled by build-app.sh.
 let package = Package(
     name: "HiDisplay",
-    platforms: [.macOS(.v13)], // macOS 13 Ventura+: SMAppService exists, SMJobBless not needed
+    platforms: [.macOS(.v14)], // macOS 14 Sonoma+: SettingsLink, openSettings, two-parameter onChange
     targets: [
         // All logic lives in the library so it is testable without launching an app.
         .target(
             name: "HiDisplayKit",
             path: "Sources/HiDisplayKit",
             swiftSettings: [
-                // Swift 5 language mode: the IOKit registry walks, CGDisplayReconfiguration
-                // C callback, and NSWindow overlay work are all simpler without Swift 6 strict
-                // concurrency ceremony. Tighten to .v6 once the hardware paths are stable.
-                .swiftLanguageMode(.v5)
+                // Swift 6 language mode: strict concurrency is enforced, so an isolation mistake
+                // in the IOKit, CGDisplayReconfiguration or NSWindow paths is a compile error
+                // rather than a data race found on hardware.
+                .swiftLanguageMode(.v6),
             ]
         ),
         .executableTarget(
             name: "HiDisplay",
             dependencies: ["HiDisplayKit"],
             path: "Sources/HiDisplay",
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         // Diagnostic CLI: prints the whole discovery → identity → transport → probe chain in one pass.
         // Hardware behaviour is much easier to observe here than through a menu-bar UI.
@@ -31,14 +31,14 @@ let package = Package(
             name: "hidisplay-probe",
             dependencies: ["HiDisplayKit"],
             path: "Sources/hidisplay-probe",
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
             name: "HiDisplayTests",
             dependencies: ["HiDisplayKit"],
             path: "Tests/HiDisplayTests",
             exclude: ["Fixtures"],
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]
 )
