@@ -26,9 +26,9 @@ public final class BrightnessCoordinator: ObservableObject {
     /// Retained although the coordinator no longer selects it: `hidisplay-probe` reports what
     /// DisplayServices would do, and that is the evidence behind `docs/private-apis.md`.
     private let native = NativeBrightnessController()
-    private let ddc = DDCBrightnessController()
-    private let gamma = GammaBrightnessController()
-    private let shade = ShadeBrightnessController()
+    private let ddc: DDCControlling
+    private let gamma: GammaDimmingController
+    private let shade: ShadeDimmingController
 
     private var userOverrides: [String: BrightnessControllerKind] = [:]
     private var chosen: [String: BrightnessControllerKind] = [:]
@@ -53,7 +53,41 @@ public final class BrightnessCoordinator: ObservableObject {
     /// user brightness action on one is the recovery trigger — see `setBrightness`.
     private var heldForDDC: Set<String> = []
 
-    public init() {}
+    /// Backoff before each DDC re-probe after a transient failure, held per instance rather than as a
+    /// static so tests can inject a short ladder instead of waiting out real seconds. The settled
+    /// callback fires while a just-woken monitor may still be re-registering its attributes and waking
+    /// its I2C bus; these bounded attempts cover that window without polling forever, and any newer
+    /// probe or a disconnect cancels them through the epoch check. The default 20s tail exists for
+    /// login after a cold boot, where the app's first probe races monitor firmware that takes far
+    /// longer to bring its DDC up than a wake does — each attempt is one read on an otherwise idle bus,
+    /// so the extra step costs nothing when the earlier ones succeed.
+    private let retryDelays: [Duration]
+    static let defaultRetryDelays: [Duration] = [.seconds(2), .seconds(5), .seconds(10), .seconds(20)]
+
+    /// Production path: the real controllers and the real retry ladder.
+    public convenience init() {
+        self.init(
+            ddc: DDCBrightnessController(), gamma: GammaBrightnessController(),
+            shade: ShadeBrightnessController())
+    }
+
+    /// Test seam. Not `public`: the app always goes through the no-argument `init()`, and only the
+    /// test target — via `@testable import` — needs to substitute fakes for the controllers and a
+    /// short ladder for the retry delays.
+    init(
+        ddc: DDCControlling, gamma: GammaDimmingController, shade: ShadeDimmingController,
+        retryDelays: [Duration] = BrightnessCoordinator.defaultRetryDelays
+    ) {
+        self.ddc = ddc
+        self.gamma = gamma
+        self.shade = shade
+        self.retryDelays = retryDelays
+    }
+
+    /// Whether a display is currently held for DDC — evidence says it speaks DDC, the last probe
+    /// failed anyway, and no software dimming has been applied. Exposed (internal, not public) so
+    /// tests can observe the hold directly instead of inferring it from the absence of a write.
+    func isHeld(_ key: String) -> Bool { heldForDDC.contains(key) }
 
     // MARK: - Configuration
 
@@ -117,6 +151,7 @@ public final class BrightnessCoordinator: ObservableObject {
             chosen.removeValue(forKey: key)
             heldForDDC.remove(key)
         }
+        gamma.prune(keeping: Set(displays.map(\.cgDisplayID)))
         await ddc.invalidateAll(except: liveKeys)
 
         // Displays probe concurrently: each has its own DDC queue and its own bus, so nothing is
@@ -125,9 +160,7 @@ public final class BrightnessCoordinator: ObservableObject {
         // sequential — see `probeAndChoose`.
         await withTaskGroup(of: Void.self) { group in
             for display in displays {
-                group.addTask { @MainActor [weak self] in
-                    await self?.probeAndChoose(display: display)
-                }
+                group.addTask { await self.probeAndChoose(display: display) }
             }
         }
     }
@@ -146,8 +179,7 @@ public final class BrightnessCoordinator: ObservableObject {
         // three monitors serially tripled the time to working sliders.
         await withTaskGroup(of: Void.self) { group in
             for display in displays where !display.isBuiltIn {
-                group.addTask { @MainActor [weak self] in
-                    guard let self else { return }
+                group.addTask {
                     await self.reassertSavedBrightnessOptimistically(for: display)
                     await self.probeAndChoose(display: display)
                 }
@@ -196,15 +228,6 @@ public final class BrightnessCoordinator: ObservableObject {
     }
 
     // MARK: - Probing
-
-    /// Backoff before each DDC re-probe after a transient failure. The settled callback fires while a
-    /// just-woken monitor may still be re-registering its attributes and waking its I2C bus; these
-    /// bounded attempts cover that window without polling forever, and any newer probe or a
-    /// disconnect cancels them through the epoch check. The 20s tail exists for login after a cold
-    /// boot, where the app's first probe races monitor firmware that takes far longer to bring its
-    /// DDC up than a wake does — each attempt is one read on an otherwise idle bus, so the extra
-    /// step costs nothing when the earlier ones succeed.
-    private static let ddcRetrySeconds = [2, 5, 10, 20]
 
     public func probeAndChoose(display: DisplayDevice) async {
         await probeAndChoose(display: display, ddcRetryAttempt: 0)
@@ -367,12 +390,13 @@ public final class BrightnessCoordinator: ObservableObject {
         let nullDeservesRetry = ddcResult.isNullAnswer
             && (attempt == 0 || ddcEvidence.contains(display.id))
         guard !ddcResult.isSupported, ddcResult.isTransient || nullDeservesRetry,
-              attempt < Self.ddcRetrySeconds.count else { return false }
-        let seconds = Self.ddcRetrySeconds[attempt]
+              attempt < retryDelays.count else { return false }
+        let delay = retryDelays[attempt]
+        let totalAttempts = retryDelays.count
         Log.brightness.notice(
-            "\(display.id, privacy: .public): DDC probe failed transiently (\(ddcResult.detail, privacy: .public)); retrying in \(seconds)s (attempt \(attempt + 1)/\(Self.ddcRetrySeconds.count))")
+            "\(display.id, privacy: .public): DDC probe failed transiently (\(ddcResult.detail, privacy: .public)); retrying in \(String(describing: delay), privacy: .public) (attempt \(attempt + 1)/\(totalAttempts))")
         Task { [weak self] in
-            try? await Task.sleep(for: .seconds(seconds))
+            try? await Task.sleep(for: delay)
             guard let self, self.isCurrent(epoch: epoch, for: display.id) else { return }
             await self.probeAndChoose(display: display, ddcRetryAttempt: attempt + 1)
         }

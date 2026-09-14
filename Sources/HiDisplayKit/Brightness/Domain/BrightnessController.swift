@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 public enum BrightnessControllerKind: String, Codable, Sendable, CaseIterable, Identifiable {
@@ -108,3 +109,49 @@ public struct BrightnessState: Codable, Equatable, Sendable {
         self.controller = controller
     }
 }
+
+// MARK: - Controller-specific extra surfaces
+
+/// The bookkeeping every software-dimming controller needs beyond `BrightnessController`: an
+/// immediate, total undo. Hardware controllers have no equivalent — DDC and native hold their value
+/// in the monitor, not in a table this app owns — which is why this is its own protocol rather than
+/// folded into `BrightnessController`.
+///
+/// Kept `@MainActor`, same as `BrightnessCoordinator` itself: `ShadeBrightnessController` touches
+/// `NSWindow` and is only safely callable from the main actor, and `reapplySoftwareDimming` /
+/// `handleDisplaysChanged` depend on these calls staying synchronous from the coordinator's own
+/// MainActor methods — making them `async` would reintroduce the reconfiguration flash the fast path
+/// exists to avoid (see `reapplySoftwareDimming`'s doc comment).
+@MainActor
+public protocol SoftwareDimmingController: BrightnessController {
+    /// Clears every applied dim immediately. Backs `BrightnessCoordinator.resetAllDimming`.
+    func resetAll()
+}
+
+/// `GammaBrightnessController`'s extra surface, named separately so `BrightnessCoordinator` can hold
+/// (and tests can inject a fake for) gamma-specific bookkeeping without a concrete CoreGraphics
+/// dependency.
+public protocol GammaDimmingController: SoftwareDimmingController {
+    func prune(keeping live: Set<CGDirectDisplayID>)
+    func reapplyAll()
+}
+
+/// `ShadeBrightnessController`'s extra surface, same reasoning as `GammaDimmingController`.
+public protocol ShadeDimmingController: SoftwareDimmingController {
+    func reposition(displays: [DisplayDevice])
+}
+
+/// `DDCBrightnessController`'s extra surface: persisted session facts and bulk invalidation. No other
+/// controller has a notion of "facts learned about the bus", so this stays off `BrightnessController`.
+public protocol DDCControlling: BrightnessController {
+    func seedFacts(_ facts: DDCSessionFacts, for key: String) async
+    func facts(for key: String) async -> DDCSessionFacts?
+    func invalidateAll(except liveKeys: Set<String>) async
+}
+
+// Structural conformance only. `GammaBrightnessController` and `ShadeBrightnessController` already
+// implement every requirement of their protocol above; declaring the conformance here — rather than
+// editing their own files — keeps those files owned by the software-dimming phase while still letting
+// `BrightnessCoordinator` depend on a protocol it can fake in tests.
+extension GammaBrightnessController: GammaDimmingController {}
+extension ShadeBrightnessController: ShadeDimmingController {}

@@ -30,7 +30,7 @@ public struct DDCSessionFacts: Equatable, Sendable, Codable {
 /// Owns exactly one `DDCCommandQueue` per display key, created lazily and torn down on disconnect.
 /// Routing through a key rather than a `CGDirectDisplayID` is what stops a reconnect (which reassigns
 /// display IDs) from sending one monitor's commands down another monitor's queue.
-public actor DDCBrightnessController: BrightnessController {
+public actor DDCBrightnessController: DDCControlling {
 
     public nonisolated let kind: BrightnessControllerKind = .ddc
 
