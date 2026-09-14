@@ -9,11 +9,15 @@ public actor ProfileStore {
 
     public enum StoreError: Error, CustomStringConvertible {
         case unsupportedSchema(found: Int, supported: Int)
+        /// Every file this app ever wrote carries `schemaVersion`; one without it is not ours.
+        case missingSchemaVersion
 
         public var description: String {
             switch self {
             case .unsupportedSchema(let found, let supported):
                 return "profile file uses schema \(found); this app understands up to \(supported)"
+            case .missingSchemaVersion:
+                return "profile file has no schemaVersion"
             }
         }
     }
@@ -59,6 +63,9 @@ public actor ProfileStore {
         do {
             document = try Self.decode(data)
             Log.profile.debug("loaded \(self.document.profiles.count) profile(s)")
+            // A migrated document is written back straight away, so the upgrade does not depend on
+            // some later change happening to trigger a save.
+            if Self.schemaVersion(in: data) != ProfileDocument.currentSchemaVersion { scheduleSave() }
         } catch {
             // Keep the unreadable file rather than overwriting it: it is the user's data, and a
             // corrupt-looking file is often recoverable by hand. Remove a stale salvage first —
@@ -77,8 +84,7 @@ public actor ProfileStore {
 
         // Read the version first so a future file shape can be rejected cleanly instead of failing
         // with a confusing key-not-found error.
-        struct VersionProbe: Decodable { let schemaVersion: Int }
-        let version = (try? decoder.decode(VersionProbe.self, from: data))?.schemaVersion ?? 1
+        guard let version = schemaVersion(in: data) else { throw StoreError.missingSchemaVersion }
         guard version <= ProfileDocument.currentSchemaVersion else {
             throw StoreError.unsupportedSchema(
                 found: version, supported: ProfileDocument.currentSchemaVersion)
@@ -87,14 +93,50 @@ public actor ProfileStore {
         return try migrate(decoder.decode(ProfileDocument.self, from: data))
     }
 
-    /// Applies forward migrations. Currently a no-op — it exists so the first real schema change is a
-    /// one-line addition rather than a redesign.
+    private static func schemaVersion(in data: Data) -> Int? {
+        struct VersionProbe: Decodable { let schemaVersion: Int }
+        return (try? JSONDecoder().decode(VersionProbe.self, from: data))?.schemaVersion
+    }
+
+    /// Applies forward migrations, oldest first.
+    ///
+    /// Schema 2: keys of serial-identified displays carried the raw serial (`v10ac-pd0a1-s0000abcd`)
+    /// and now carry its truncated hash. Every place a key lives is rewritten — the profile
+    /// dictionary and the `displayKey` inside each profile, HiDPI profiles, and user-assignment
+    /// lookups — so saved brightness and overrides survive the rename. No file was ever written
+    /// without `schemaVersion`, so its absence is treated as corruption, not as schema 1.
     static func migrate(_ document: ProfileDocument) throws -> ProfileDocument {
         var migrated = document
-        if migrated.schemaVersion < ProfileDocument.currentSchemaVersion {
-            migrated.schemaVersion = ProfileDocument.currentSchemaVersion
+        if migrated.schemaVersion < 2 {
+            migrated.profiles = Dictionary(
+                migrated.profiles.map { key, profile in
+                    var renamed = profile
+                    renamed.displayKey = hashedSerialKey(key)
+                    return (renamed.displayKey, renamed)
+                },
+                uniquingKeysWith: { a, b in a.updatedAt >= b.updatedAt ? a : b })
+            migrated.hiDPIProfiles = migrated.hiDPIProfiles.mapValues { profile in
+                var renamed = profile
+                renamed.displayKey = hashedSerialKey(profile.displayKey)
+                return renamed
+            }
+            migrated.userAssignments = Dictionary(
+                migrated.userAssignments.map { (hashedSerialKey($0.key), $0.value) },
+                uniquingKeysWith: { a, _ in a })
         }
+        migrated.schemaVersion = ProfileDocument.currentSchemaVersion
         return migrated
+    }
+
+    /// `v10ac-pd0a1-s0000abcd` → `v10ac-pd0a1-s<hash>`. Any other key shape is returned unchanged.
+    static func hashedSerialKey(_ key: String) -> String {
+        let parts = key.split(separator: "-")
+        guard parts.count == 3,
+              parts[0].hasPrefix("v"), parts[1].hasPrefix("p"),
+              parts[2].hasPrefix("s"), parts[2].count == 9,
+              let serial = UInt32(parts[2].dropFirst(), radix: 16)
+        else { return key }
+        return "\(parts[0])-\(parts[1])-s\(DisplayIdentity.serialHash(serial))"
     }
 
     /// Writes now, bypassing the debounce. Used on quit.

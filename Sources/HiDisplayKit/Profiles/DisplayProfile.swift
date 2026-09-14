@@ -105,7 +105,8 @@ public struct HiDPIProfile: Codable, Equatable, Sendable, Identifiable {
 /// The on-disk document. Versioned from day one so a schema change is a migration rather than a data
 /// loss event.
 public struct ProfileDocument: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    /// 1: initial. 2: serial-bearing keys carry a hash of the serial instead of the serial.
+    public static let currentSchemaVersion = 2
 
     public var schemaVersion: Int
     public var profiles: [String: DisplayProfile]

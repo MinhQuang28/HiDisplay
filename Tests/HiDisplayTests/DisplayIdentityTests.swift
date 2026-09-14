@@ -17,7 +17,9 @@ final class DisplayIdentityTests: XCTestCase {
         let resolved = DisplayIdentityResolver.resolve(displays: displays, metadata: [])
         XCTAssertEqual(resolved.count, 1)
         XCTAssertEqual(resolved[0].identity.keyTier, .strong)
-        XCTAssertEqual(resolved[0].identity.stableKey, "v10ac-pd0a1-s0000abcd")
+        XCTAssertEqual(resolved[0].identity.stableKey, "v10ac-pd0a1-s" + DisplayIdentity.serialHash(0xabcd))
+        XCTAssertFalse(resolved[0].identity.stableKey.contains("0000abcd"),
+                       "the raw serial must not appear in a key that is logged and exported")
     }
 
     func testEDIDHashProducesStrongTierEvenWithoutSerial() {
@@ -122,8 +124,8 @@ final class DisplayIdentityTests: XCTestCase {
         let resolved = DisplayIdentityResolver.resolve(displays: displays, metadata: metadata)
         // Both pair confidently despite the metadata arriving in the opposite order.
         XCTAssertEqual(resolved.map(\.pairing), [.confident, .confident])
-        XCTAssertEqual(resolved[0].identity.stableKey, "v10ac-pd0a1-s00000111")
-        XCTAssertEqual(resolved[1].identity.stableKey, "v10ac-pd0a1-s00000222")
+        XCTAssertEqual(resolved[0].identity.stableKey, "v10ac-pd0a1-s" + DisplayIdentity.serialHash(0x111))
+        XCTAssertEqual(resolved[1].identity.stableKey, "v10ac-pd0a1-s" + DisplayIdentity.serialHash(0x222))
     }
 
     // MARK: - Determinism and pinning
@@ -151,7 +153,8 @@ final class DisplayIdentityTests: XCTestCase {
         let identity = DisplayIdentity(
             cgDisplayID: 1, vendorID: 0xABCD, productID: 0x00EF,
             serialNumber: 0x1234_5678, keyTier: .strong)
-        XCTAssertEqual(identity.stableKey, "vabcd-p00ef-s12345678")
+        XCTAssertEqual(identity.stableKey, "vabcd-p00ef-s" + DisplayIdentity.serialHash(0x12345678))
+        XCTAssertEqual(DisplayIdentity.serialHash(0x12345678).count, 16)
     }
 
     // MARK: - Vendor/product fallback

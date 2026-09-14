@@ -169,6 +169,41 @@ final class ProfileStoreTests: XCTestCase {
         }
     }
 
+    /// A schema-1 file keyed by raw serial comes back keyed by the serial's hash — everywhere a
+    /// key lives — so brightness, overrides and pinned identities survive the rename.
+    func testSchemaOneSerialKeysAreRewrittenToHashes() throws {
+        let old = "v10ac-pd0a1-s0000abcd"
+        let new = "v10ac-pd0a1-s" + DisplayIdentity.serialHash(0xabcd)
+        let hiDPIID = "6f6d8c9e-0b9e-4a5c-9c1a-1d2e3f4a5b6c"
+        let json = """
+        { "schemaVersion": 1,
+          "profiles": { "\(old)": { "displayKey": "\(old)", "keyTier": 3, "displayName": "Dell",
+                         "brightness": 0.4, "keyboardTargetEnabled": true, "updatedAt": "2026-01-01T00:00:00Z" },
+                        "v10ac-pd0a1": { "displayKey": "v10ac-pd0a1", "keyTier": 1, "displayName": "Weak",
+                         "brightness": 0.7, "keyboardTargetEnabled": true, "updatedAt": "2026-01-01T00:00:00Z" } },
+          "hiDPIProfiles": [ "\(hiDPIID)", { "id": "\(hiDPIID)", "displayKey": "\(old)", "resolutions": [], "injectPatchedEDID": false,
+                              "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z" } ],
+          "userAssignments": { "\(old)": "11111111-2222-3333-4444-555555555555" } }
+        """
+        let document = try ProfileStore.decode(Data(json.utf8))
+
+        XCTAssertEqual(document.schemaVersion, ProfileDocument.currentSchemaVersion)
+        XCTAssertNil(document.profiles[old])
+        XCTAssertEqual(document.profiles[new]?.displayKey, new)
+        XCTAssertEqual(document.profiles[new]?.brightness, 0.4)
+        XCTAssertEqual(document.profiles["v10ac-pd0a1"]?.brightness, 0.7, "non-serial keys are untouched")
+        XCTAssertEqual(document.hiDPIProfiles.values.first?.displayKey, new)
+        XCTAssertEqual(document.userAssignments.keys.sorted(), [new])
+        XCTAssertFalse(try String(data: JSONEncoder().encode(document), encoding: .utf8)!.contains("0000abcd"))
+    }
+
+    func testHashedSerialKeyLeavesOtherShapesAlone() {
+        for key in ["v10ac-pd0a1", "v10ac-pd0a1-edeadbeefcafe1234", "v10ac-pd0a1-tdispext0",
+                    "user-11111111-2222-3333-4444-555555555555", "v10ac-pd0a1-s" + DisplayIdentity.serialHash(1)] {
+            XCTAssertEqual(ProfileStore.hashedSerialKey(key), key)
+        }
+    }
+
     func testMigrationStampsTheCurrentSchemaVersion() throws {
         let document = ProfileDocument(schemaVersion: 0)
         let migrated = try ProfileStore.migrate(document)

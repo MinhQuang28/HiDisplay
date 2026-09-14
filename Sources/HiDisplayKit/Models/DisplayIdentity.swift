@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// How much trust the stable key deserves. Persisted with the profile, because a profile written
@@ -77,6 +78,16 @@ public struct DisplayIdentity: Hashable, Codable, Sendable {
         self.userAssignedID = userAssignedID
     }
 
+    /// Truncated SHA-256 of a serial number, in the same 16-hex-digit shape as `edidHash`.
+    ///
+    /// Keys written under profile schema 1 carried the serial itself (`-s%08x`);
+    /// `ProfileStore.migrate` rewrites them through this function, so the two must stay in step.
+    public static func serialHash(_ serial: UInt32) -> String {
+        var bytes = serial.bigEndian
+        let data = Data(bytes: &bytes, count: MemoryLayout<UInt32>.size)
+        return SHA256.hash(data: data).prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
     /// The profile key. Deterministic, lowercase hex, no locale-dependent formatting.
     ///
     /// A user assignment wins outright. Otherwise the key reflects `keyTier`, and the tier is baked
@@ -92,8 +103,12 @@ public struct DisplayIdentity: Hashable, Codable, Sendable {
             if let edidHash, !edidHash.isEmpty {
                 return "\(base)-e\(edidHash)"
             }
-            // `.strong` without an EDID hash means the serial is the strong part.
-            return String(format: "%@-s%08x", base, serialNumber ?? 0)
+            // `.strong` without an EDID hash means the serial is the strong part. It goes in hashed:
+            // the key is logged and exported in diagnostics, and a raw monitor serial is more
+            // identifying than it looks. This is pseudonymisation, not secrecy — a 32-bit input
+            // can be brute-forced against an unsalted hash — but it keeps the serial out of casual
+            // reading, and a salt would break import/export across machines.
+            return "\(base)-s\(Self.serialHash(serialNumber ?? 0))"
         case .location:
             // The unit token survives a reboot; the registry entry ID does not. The ID form is kept
             // only as the fallback for a backend that produced no token — those keys were already

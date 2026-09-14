@@ -71,7 +71,7 @@ over every setting.
 
 | Tier | Key shape | When | Cost |
 | --- | --- | --- | --- |
-| `strong` | `v10ac-pd0a1-s0000abcd` or `…-e<edid hash>` | a serial or EDID hash exists | none — survives reboots and port changes |
+| `strong` | `v10ac-pd0a1-s<serial hash>` or `…-e<edid hash>` | a serial or EDID hash exists | none — survives reboots and port changes. The serial is pseudonymised (unsalted truncated SHA-256, so not secret against brute force) because the key is logged and exported in diagnostics |
 | `weak` | `v10ac-pd0a1` | no discriminator, but only one such display attached | cannot distinguish a second identical monitor if one appears |
 | `location` | `v10ac-pd0a1-l0000000000004001` | no discriminator and ≥2 identical displays attached | breaks when the user changes port, hub or KVM |
 
