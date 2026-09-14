@@ -74,11 +74,11 @@ Confined to `PlatformShims`, resolved via `dlsym` through a single function, eac
 an allowlist entry. A macOS release that removes one degrades a feature; it does not crash the app. See
 [private-apis.md](private-apis.md).
 
-## Not yet built — Milestone E
+## Not yet built — the XPC helper
 
-The privileged helper. Until it exists, the app writes only inside `~/Downloads` and shows the user the
-command to run. The installer layer is complete and tested against a temporary root but is not wired to
-the real path.
+The privileged helper still needs a Developer ID and notarization. Until it exists, the app installs
+through one administrator prompt (the section below), and **Export Only…** writes into `~/Downloads`
+and shows the user the command to run.
 
 When it is built:
 
@@ -111,8 +111,12 @@ is kept **literally** rather than being quietly dropped:
 - Both are re-checked against a strict character allowlist immediately before the command is built, and
   the destination is proved by `OverridePaths.resolve` to sit inside the override root. Anything failing
   either check refuses rather than escaping harder.
-- The command is three fixed operations — `mkdir -p`, `cp`, `chmod 644`. No expansion, no `rm`, no
-  recursion.
+- The command is a fixed sequence — owner check on the override root, `mkdir -p`, `cp` to a partial
+  file next to the destination, `chmod 644`, `shasum -c` against the approved hash, `mv` into place —
+  plus one `rm -f` of that partial file on the failure path. Every binary is an absolute path, no
+  expansion, no recursion, no double quotes (the string is embedded in an AppleScript literal). The
+  root, when something already exists at its path, must be owned by the user the script runs as —
+  defence in depth against a planted directory or symlink; `/Library` itself is root-owned.
 - The result is verified afterwards by reading the file back without privileges and comparing SHA-256
   against the plan. An unverified privileged write is a write whose outcome you do not know.
 - The recovery package, including the backup of the file being replaced, is created **before** the
@@ -136,7 +140,8 @@ XPC contract; that needs a Developer ID this build does not have.
 - [x] No code path requires SIP disabled
 - [x] No writes under `/System/`
 - [x] Every `dlsym` symbol in the allowlist, with a degrade path
-- [ ] Hardened Runtime
+- [x] Hardened Runtime
+- [x] `NSDownloadsFolderUsageDescription` (Downloads is TCC-protected)
 - [ ] Notarization
 - [ ] Helper registered via `SMAppService`
 - [ ] XPC caller verified by `auditToken` + code requirement

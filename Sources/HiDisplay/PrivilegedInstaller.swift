@@ -120,8 +120,12 @@ enum PrivilegedInstaller {
     }
 
     private static func runWithAdministratorPrivileges(_ shellScript: String) throws {
-        let source = "do shell script \"\(shellScript.replacingOccurrences(of: "\"", with: "\\\""))\""
-            + " with administrator privileges"
+        // Backslashes first, then quotes: the path allowlist already excludes both, but the
+        // allowlist and this wrapper live in different files, so the wrapper escapes for itself.
+        let escaped = shellScript
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let source = "do shell script \"\(escaped)\" with administrator privileges"
         guard let script = NSAppleScript(source: source) else {
             throw InstallError.authorizationFailed("could not build the authorization request")
         }

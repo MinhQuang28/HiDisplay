@@ -38,6 +38,11 @@ public enum PrivilegedInstallScript {
     ///
     /// Fixed operations only — `mkdir -p`, `cp`, `chmod`, `shasum -c`, `mv` — plus one `rm -f` of the
     /// script's own partial file on the failure path, the single non-recursive delete it may perform.
+    /// Every binary is named by absolute path, and the override root, when something already exists at
+    /// its path, must be owned by the user the script runs as (root in production, the test user under
+    /// `bash -c`). `/Library` itself is root-owned, so this is defence in depth rather than a live hole:
+    /// it refuses to follow a planted directory or symlink into a tree root did not create. `stat -L`
+    /// so a symlink is judged by its target.
     public static func install(
         staging: String, vendorDirectory: String, destination: String, sha256: String
     ) throws -> String {
@@ -48,12 +53,17 @@ public enum PrivilegedInstallScript {
             throw ScriptError.unsafePath(sha256)
         }
         let partial = destination + ".hidisplay-partial"
-        return "mkdir -p '\(vendorDirectory)' && "
-            + "cp '\(staging)' '\(partial)' && "
-            + "chmod 644 '\(partial)' && "
+        let root = (vendorDirectory as NSString).deletingLastPathComponent
+        // No double quotes anywhere in the script: it is embedded in an AppleScript string literal.
+        // Both substitutions expand to a bare integer, so unquoted use is safe.
+        return "{ [ ! -e '\(root)' ] || [ $(/usr/bin/stat -L -f %u '\(root)') = $(/usr/bin/id -u) ]; } || "
+            + "{ echo 'install refused: the override root is not owned by the installing user' >&2; exit 2; }; "
+            + "/bin/mkdir -p '\(vendorDirectory)' && "
+            + "/bin/cp '\(staging)' '\(partial)' && "
+            + "/bin/chmod 644 '\(partial)' && "
             + "echo '\(sha256)  \(partial)' | /usr/bin/shasum -a 256 -c --status - && "
-            + "mv '\(partial)' '\(destination)' || "
-            + "{ rm -f '\(partial)'; "
+            + "/bin/mv '\(partial)' '\(destination)' || "
+            + "{ /bin/rm -f '\(partial)'; "
             + "echo 'install failed: the file to install did not match the approved contents' >&2; "
             + "exit 1; }"
     }

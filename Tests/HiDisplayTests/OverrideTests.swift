@@ -585,6 +585,28 @@ final class PrivilegedInstallScriptTests: XCTestCase {
         try? FileManager.default.removeItem(at: base)
     }
 
+    /// A symlink planted at the root's path pointing into a root-owned tree: the script must refuse
+    /// before `mkdir -p` follows it, and say why.
+    func testScriptRefusesARootNotOwnedByTheInstallingUser() throws {
+        let payload = Data("<plist/>".utf8)
+        try FileManager.default.createSymbolicLink(
+            at: base.appendingPathComponent("root"), withDestinationURL: URL(fileURLWithPath: "/usr/bin"))
+        let (script, destination) = try makeScript(payload: payload)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", script]
+        let stderr = Pipe()
+        process.standardError = stderr
+        try process.run()
+        process.waitUntilExit()
+
+        XCTAssertEqual(process.terminationStatus, 2)
+        let message = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        XCTAssertTrue(message.contains("not owned by the installing user"), message)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
     private func makeScript(payload: Data, stagedAs staged: Data? = nil) throws
         -> (script: String, destination: URL)
     {
