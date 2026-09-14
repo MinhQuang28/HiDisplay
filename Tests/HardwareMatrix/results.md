@@ -19,7 +19,7 @@ Fill one row per Mac + macOS + connection + monitor combination. `TBD` means unt
 | --- | --- |
 | App launches, menu bar item appears | pass |
 | `swift build` clean, zero warnings | pass |
-| `swift test` — 213 tests | pass |
+| `swift test` — 278 tests | pass |
 | `dlsym IOAVServiceCreateWithService` | **found** |
 | `dlsym IOAVServiceReadI2C` | **found** |
 | `dlsym IOAVServiceWriteI2C` | **found** |

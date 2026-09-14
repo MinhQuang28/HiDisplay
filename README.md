@@ -1,6 +1,6 @@
 # HiDisplay
 
-A menu-bar app for macOS 13+ that does two things macOS leaves out: **HiDPI resolutions on displays that
+A menu-bar app for macOS 14+ that does two things macOS leaves out: **HiDPI resolutions on displays that
 don't get them**, and **brightness control for external monitors**.
 
 Open source, no dependencies, no background daemon, and nothing that requires disabling SIP.
@@ -20,14 +20,13 @@ Milestones A–E of the [implementation plan](#project-layout) are done. What wo
 | Brightness keys (F1/F2) redirected to external displays, with an on-screen indicator | working — needs Accessibility permission |
 | Launch at login | working |
 | Brightness: the built-in panel | **deliberately not touched** — macOS owns it ([why](#brightness)) |
-| Brightness: DDC/CI on Apple Silicon | binds correctly on hardware; **a real transaction is still unverified** — the only test display has no I2C channel |
+| Brightness: DDC/CI on Apple Silicon | working — verified on a ViewSonic VX2780-2K, including both DisplayPort frame shapes and sleep/wake recovery |
 | Intel Macs | **not supported** — the app is Apple Silicon only ([why](docs/ddc.md)) |
 | Privileged helper via `SMAppService` + XPC | not built — needs a Developer ID and notarization. Installing uses a single system authorization prompt instead ([why that is safe](docs/security.md)) |
 
-The DDC wire format is the honest gap: the transport binds and the app degrades correctly, but no
-monitor has yet answered a DDC request, so the framing itself remains unproven. See
-[`Tests/HardwareMatrix/results.md`](Tests/HardwareMatrix/results.md) for exactly what has and has not been
-confirmed on real hardware — including two silent bugs that only appeared once a display was plugged in.
+See [`Tests/HardwareMatrix/results.md`](Tests/HardwareMatrix/results.md) for exactly what has and has not
+been confirmed on real hardware — including two silent bugs that only appeared once a display was
+plugged in, and the frame-shape discovery that cost a full session on the first DDC-capable monitor.
 
 ## Features
 
@@ -85,7 +84,7 @@ costs, and lets you pin an identity manually when it genuinely cannot tell two m
 
 ## Requirements
 
-- macOS 13.0 (Ventura) or later.
+- macOS 14.0 (Sonoma) or later.
 - Apple Silicon (M-series) only. Intel Macs are not supported.
 - No permission is required for the core features — sliders, HiDPI generation and diagnostics all work
   with nothing granted. Two optional things ask: **Accessibility** for the brightness keys, and one
@@ -148,7 +147,7 @@ knowing the Recovery Terminal route in advance.
 
 ```sh
 swift build
-swift test                # 213 tests, no hardware needed
+swift test                # 278 tests, no hardware needed
 swift run hidisplay-probe # diagnostic CLI: shims, backends, identity, transport, brightness probe
 ./build-app.sh            # assemble and sign the .app
 tools/package-release.sh  # build + zip + sha256 (add --publish for a GitHub release)
@@ -167,7 +166,7 @@ its own output.
 
 | Path | Purpose |
 | --- | --- |
-| `Sources/HiDisplayKit/Core/` | Models, discovery, identity resolution, diagnostics |
+| `Sources/HiDisplayKit/{Models,Discovery,Identity,Diagnostics}/` | Models, discovery, identity resolution, diagnostics |
 | `Sources/HiDisplayKit/PlatformShims/` | The only `dlsym` in the project — see [docs/private-apis.md](docs/private-apis.md) |
 | `Sources/HiDisplayKit/Brightness/` | DDC transports, VCP codec, command queue, native/gamma/shade controllers |
 | `Sources/HiDisplayKit/HiDPI/` | EDID parser, override generator, validator, installer, recovery package |
