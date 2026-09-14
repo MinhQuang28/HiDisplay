@@ -17,7 +17,7 @@ final class DDCCommandQueueTests: XCTestCase {
             await queue.setBrightness(raw: value)
         }
 
-        try await waitUntilQuiet(transport)
+        await queue.waitUntilIdle()
 
         let sent = transport.recordedBrightnessValues
         XCTAssertFalse(sent.isEmpty, "at least one write must reach the transport")
@@ -35,7 +35,7 @@ final class DDCCommandQueueTests: XCTestCase {
             // Space the requests out so each one is genuinely a separate change rather than coalesced.
             try await Task.sleep(for: .milliseconds(30))
         }
-        try await waitUntilQuiet(transport)
+        await queue.waitUntilIdle()
 
         // Every recorded frame must be a complete, well-formed set request. Interleaved writes would
         // corrupt framing, so this also proves nothing overlapped.
@@ -84,7 +84,7 @@ final class DDCCommandQueueTests: XCTestCase {
         while transport.writeAttempts == 0 { await Task.yield() }
         await queue.setBrightness(raw: 42)
         await read
-        try await waitUntilQuiet(transport)
+        await queue.waitUntilIdle()
 
         let frames = transport.recordedWrites
         XCTAssertEqual(frames.count, 2, "one get request, then one set")
@@ -349,16 +349,6 @@ final class DDCCommandQueueTests: XCTestCase {
         XCTFail("condition never became true within \(timeout)")
     }
 
-    private func waitUntilQuiet(_ transport: FakeDDCTransport, timeout: Duration = .seconds(3)) async throws {
-        let deadline = ContinuousClock.now + timeout
-        var lastCount = -1
-        while ContinuousClock.now < deadline {
-            let count = transport.recordedWrites.count
-            if count == lastCount, count > 0 { return }
-            lastCount = count
-            try await Task.sleep(for: .milliseconds(60))
-        }
-    }
 }
 
 /// The transport-rebind path that recovers DDC after a monitor sleep/wake or fast replug.

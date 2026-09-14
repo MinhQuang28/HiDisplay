@@ -99,6 +99,14 @@ public actor DDCCommandQueue {
         Task { await drain() }
     }
 
+    /// Suspends until the drain loop has sent everything pending. For tests: polling the transport
+    /// for "no new frame in a while" mistakes a slow runner's scheduling gap for completion.
+    public func waitUntilIdle() async {
+        while isDraining {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
     // MARK: - The bus token
 
     /// Waits until no other transaction is on the wire, then takes it.
