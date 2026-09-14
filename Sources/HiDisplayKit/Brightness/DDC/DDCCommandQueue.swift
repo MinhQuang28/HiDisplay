@@ -229,10 +229,15 @@ public actor DDCCommandQueue {
     }
 }
 
-/// Races an operation against a deadline, cancelling the loser.
+/// Races an operation against a deadline.
 ///
-/// `Task.sleep` inside the transport respects cancellation, so a timed-out read does not leave a
-/// detached task still talking to the bus.
+/// The task group does not return until both children have finished, so an operation that cannot
+/// observe cancellation — a synchronous IOKit call — is still awaited to completion before the
+/// timeout error propagates. That is deliberate: the caller holds the bus token across this call,
+/// and releasing it while a frame is in flight is exactly the interleave the token exists to
+/// prevent. The deadline therefore bounds a transport that *can* be cancelled (the fake, or a reply
+/// delay); a real I2C read is bounded by the driver's own timeout instead. Asserted by
+/// `testTimeoutDoesNotReleaseTheBusWhileAnUncancellableReadIsRunning`.
 func withTimeout<T: Sendable>(
     _ duration: Duration,
     operation: @escaping @Sendable () async throws -> T

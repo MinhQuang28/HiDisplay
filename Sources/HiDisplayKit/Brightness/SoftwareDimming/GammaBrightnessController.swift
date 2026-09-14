@@ -84,6 +84,15 @@ public final class GammaBrightnessController: BrightnessController, @unchecked S
         }
     }
 
+    /// Forgets displays that are no longer attached.
+    ///
+    /// Their ramps died with the connection, and CoreGraphics reuses `CGDirectDisplayID`s: without
+    /// this, `reapplyAll` would dim whatever monitor next inherits the ID, and a replug of the same
+    /// monitor that then binds DDC would keep the stale ramp underneath the hardware value.
+    public func prune(keeping live: Set<CGDirectDisplayID>) {
+        lock.withLock { appliedFactors = appliedFactors.filter { live.contains($0.key) } }
+    }
+
     public func reset(display: DisplayDevice) async {
         let hadFactor = lock.withLock { appliedFactors.removeValue(forKey: display.cgDisplayID) != nil }
         guard hadFactor else { return }

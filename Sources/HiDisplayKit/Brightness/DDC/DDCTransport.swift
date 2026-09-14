@@ -88,6 +88,9 @@ public final class FakeDDCTransport: DDCTransport, @unchecked Sendable {
     /// know how many attempts were made, which `recordedWrites` cannot show when writes fail.
     public var writeAttempts: Int { lock.withLock { storedWriteAttempts } }
     public var errorToThrow: DDCError?
+    /// When set, `read` blocks the calling thread for this long *without* a suspension point —
+    /// the shape of a real `IOAVServiceReadI2C`, which cancellation cannot interrupt.
+    public var uncancellableReadDuration: Duration?
 
     private var storedWrites: [[UInt8]] = []
     private var storedWriteInstants: [ContinuousClock.Instant] = []
@@ -119,6 +122,7 @@ public final class FakeDDCTransport: DDCTransport, @unchecked Sendable {
     public func read(length: Int) async throws -> [UInt8] {
         if let errorToThrow { throw errorToThrow }
         if latency > .zero { try await Task.sleep(for: latency) }
+        if let uncancellableReadDuration { Self.blockCurrentThread(for: uncancellableReadDuration) }
         return lock.withLock {
             guard !replies.isEmpty else { return [] }
             let reply = replies[min(replyIndex, replies.count - 1)]
@@ -142,6 +146,12 @@ public final class FakeDDCTransport: DDCTransport, @unchecked Sendable {
                 return UInt16(frame[opcode + 2]) << 8 | UInt16(frame[opcode + 3])
             }
         }
+    }
+
+    /// Synchronous on purpose — the point is a read with no suspension point, like IOKit's.
+    private static func blockCurrentThread(for duration: Duration) {
+        let seconds = Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
+        Thread.sleep(forTimeInterval: seconds)
     }
 
     public func reset() {

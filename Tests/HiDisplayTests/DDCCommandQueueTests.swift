@@ -57,6 +57,46 @@ final class DDCCommandQueueTests: XCTestCase {
         }
     }
 
+    /// A synchronous IOKit read cannot be cancelled. The timeout must therefore *wait* for it —
+    /// releasing the bus early would let the next frame go out mid-transaction, which is how
+    /// monitors get wedged. The observable: a write queued during the timed-out read starts only
+    /// after the read has finished, and the read error is still reported as a timeout.
+    func testTimeoutDoesNotReleaseTheBusWhileAnUncancellableReadIsRunning() async throws {
+        let transport = FakeDDCTransport(replies: [[]])
+        transport.uncancellableReadDuration = .milliseconds(150)
+        let queue = DDCCommandQueue(
+            transport: transport, label: "test", writeInterval: interval,
+            readTimeout: .milliseconds(20), maxRetries: 0)
+
+        let readStarted = ContinuousClock.now
+        async let read: Void = {
+            do {
+                _ = try await queue.readBrightness()
+                XCTFail("an empty reply must not decode")
+            } catch DDCError.timeout {
+                // expected: the deadline is what the caller sees
+            } catch {
+                XCTFail("unexpected error \(error)")
+            }
+        }()
+        // Wait until the read has sent its request — it holds the bus from that point on — rather
+        // than sleeping and hoping the scheduler ran it first.
+        while transport.writeAttempts == 0 { await Task.yield() }
+        await queue.setBrightness(raw: 42)
+        await read
+        try await waitUntilQuiet(transport)
+
+        let frames = transport.recordedWrites
+        XCTAssertEqual(frames.count, 2, "one get request, then one set")
+        XCTAssertEqual(frames.first?[2], 0x01, "the get request went out first")
+        XCTAssertEqual(frames.last?[2], 0x03, "the set frame went out second")
+        let setInstant = try XCTUnwrap(transport.writeInstants.last)
+        XCTAssertGreaterThanOrEqual(
+            readStarted.duration(to: setInstant), .milliseconds(150),
+            "the set frame went out while the read was still on the wire")
+        XCTAssertEqual(transport.recordedBrightnessValues, [42])
+    }
+
     func testInvalidateStopsFurtherWrites() async throws {
         let transport = FakeDDCTransport()
         let queue = DDCCommandQueue(transport: transport, label: "test", writeInterval: interval)
