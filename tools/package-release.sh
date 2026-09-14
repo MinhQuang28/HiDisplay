@@ -47,7 +47,9 @@ if [ "$PUBLISH" -ge 1 ]; then
     command -v gh >/dev/null || { echo "error: gh CLI not found" >&2; exit 1; }
     if [ "$PUBLISH" -eq 1 ]; then
         # A release is a public statement about a commit: refuse a dirty tree or an unpushed HEAD.
-        [ -z "$(git status --porcelain)" ] || { echo "error: working tree is not clean" >&2; exit 1; }
+        # Untracked files (local plans, editor state) are not part of the release; tracked changes are.
+        [ -z "$(git status --porcelain --untracked-files=no)" ] \
+            || { echo "error: working tree has uncommitted tracked changes" >&2; exit 1; }
         git fetch -q origin
         git merge-base --is-ancestor HEAD origin/main \
             || { echo "error: HEAD is not pushed to origin/main" >&2; exit 1; }
