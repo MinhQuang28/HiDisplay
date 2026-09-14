@@ -26,7 +26,11 @@ BUNDLE_ID="com.hidisplay.app"
 # once drifted silently; now the bundle cannot disagree with the binary.
 VERSION="$(sed -n 's/.*static let version = "\([^"]*\)".*/\1/p' Sources/HiDisplay/AppModel.swift)"
 [ -n "$VERSION" ] || { echo "Error: could not read AppModel.version"; exit 1; }
-MIN_MACOS="13.0"
+MIN_MACOS="14.0"
+# CFBundleVersion must change between builds of the same marketing version, or LaunchServices and
+# SMAppService cannot tell a rebuild from the copy they already registered (the `.notFound` login
+# item symptom). Commit count is monotonic and needs no bookkeeping; fall back outside a checkout.
+BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || date +%Y%m%d%H%M)"
 OUT="build/${APP_NAME}.app"
 
 echo "==> swift build -c release"
@@ -53,9 +57,13 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-    <key>CFBundleVersion</key><string>${VERSION}</string>
+    <key>CFBundleVersion</key><string>${VERSION}.${BUILD_NUMBER}</string>
     <key>LSMinimumSystemVersion</key><string>${MIN_MACOS}</string>
     <key>LSUIElement</key><true/>
+    <!-- Recovery packages and diagnostics reports are written to ~/Downloads, which is TCC-protected:
+         without this string the system prompt has no rationale and a denial looks like a generic
+         failure. -->
+    <key>NSDownloadsFolderUsageDescription</key><string>HiDisplay saves recovery packages, exported overrides and diagnostics reports to your Downloads folder.</string>
     <!-- Required, not optional: "Restart Now" after installing an override talks to System Events,
          and since macOS 10.14 an app with no usage string is denied Apple Events silently — the
          button would appear to do nothing. The privileged install itself does not need this; it runs

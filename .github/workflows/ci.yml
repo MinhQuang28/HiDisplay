@@ -3,7 +3,11 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -11,9 +15,16 @@ concurrency:
 
 jobs:
   test:
-    runs-on: macos-15
+    runs-on: macos-26
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      # Pin the toolchain to the newest Xcode 26 on the image: the OSD uses the macOS 26 SDK's
+      # glassEffect behind an availability check, which an older SDK cannot compile at all.
+      - name: Select Xcode
+        run: |
+          XCODE="$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$XCODE/Contents/Developer" && swift --version
       - name: Run tests
         run: swift test
       # The shipped binary is a release build assembled by build-app.sh; a debug-only CI lets
@@ -22,3 +33,31 @@ jobs:
         run: ./build-app.sh
       - name: Verify bundle signature
         run: codesign --verify --deep --strict build/HiDisplay.app
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: HiDisplay.app
+          path: build/HiDisplay.app
+          if-no-files-found: error
+
+  release:
+    # Tag-triggered: `git tag v0.7.0 && git push --tags` produces the zip + sha256 as release assets.
+    # Not notarized — that step needs a Developer ID (see docs/security.md).
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: |
+          XCODE="$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+      - name: Package
+        run: tools/package-release.sh
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tools/package-release.sh --publish-existing
