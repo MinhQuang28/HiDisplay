@@ -6,7 +6,8 @@ import PackageDescription
 // full IDE support. The runnable .app bundle is assembled by build-app.sh.
 let package = Package(
     name: "HiDisplay",
-    platforms: [.macOS(.v14)], // macOS 14 Sonoma+: SettingsLink, openSettings, two-parameter onChange
+    // String form: swift-tools 6.0 has no `.v26` constant yet.
+    platforms: [.macOS("26.0")], // macOS 26 Tahoe+: Liquid Glass (glassEffect) for the brightness HUD
     targets: [
         // All logic lives in the library so it is testable without launching an app.
         .target(

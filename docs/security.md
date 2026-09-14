@@ -83,7 +83,7 @@ and shows the user the command to run.
 When it is built:
 
 - **`SMAppService.daemon(plistName:)`**, not `SMJobBless`. The latter is deprecated, and the deployment
-  target is macOS 13+ specifically so the modern API is available.
+  target (macOS 26+) is well past the point where the modern API is available.
 - Helper in `Contents/MacOS/`, launchd plist in `Contents/Library/LaunchDaemons/`, same Team ID as the
   app, signed, app notarized.
 - `.requiresApproval` from `register()` is normal on first run and must be presented as a step

@@ -26,7 +26,7 @@ BUNDLE_ID="com.hidisplay.app"
 # once drifted silently; now the bundle cannot disagree with the binary.
 VERSION="$(sed -n 's/.*static let version = "\([^"]*\)".*/\1/p' Sources/HiDisplay/AppModel.swift)"
 [ -n "$VERSION" ] || { echo "Error: could not read AppModel.version"; exit 1; }
-MIN_MACOS="14.0"
+MIN_MACOS="26.0"
 # CFBundleVersion must change between builds of the same marketing version, or LaunchServices and
 # SMAppService cannot tell a rebuild from the copy they already registered (the `.notFound` login
 # item symptom). Commit count is monotonic and needs no bookkeeping; fall back outside a checkout.

@@ -4,7 +4,7 @@ Newest first. Versions are the value of `AppModel.version`; tags are `v<version>
 
 ## 0.7.0 — 2026-09-14
 
-Breaking: minimum macOS is now 14 (Sonoma). Profile schema 2 migrates automatically on first launch.
+Breaking: minimum macOS is now 26 (Tahoe). Profile schema 2 migrates automatically on first launch.
 
 ### Fixed
 - **Serial numbers no longer appear in logs or diagnostics.** A serial-identified display's profile key
@@ -29,9 +29,9 @@ Breaking: minimum macOS is now 14 (Sonoma). Profile schema 2 migrates automatica
 ### Changed
 - **Brightness HUD redesigned** for macOS 26/27: a Liquid Glass capsule under the menu bar towards the
   top-right of the display (10% right margin), glyph plus a continuous level bar, instead of the pre-26
-  200-point square. macOS 14/15 keep the dark HUD material in the same capsule.
+  200-point square.
 - Swift 6 language mode on every target; strict concurrency is now a compile error.
-- Deployment target macOS 14: `AvailabilityCompat.swift` removed, Settings opens via `openSettings`.
+- Deployment target macOS 26: `AvailabilityCompat.swift` removed, Settings opens via `openSettings`.
 - The Accessibility permission poll is a cancellable task instead of a `Timer`.
 - `CFBundleVersion` is `<version>.<commit count>`, so LaunchServices can tell rebuilds apart.
 - CI pins the Xcode toolchain, uploads the bundle, and a `v*` tag publishes a release with a `.sha256`
