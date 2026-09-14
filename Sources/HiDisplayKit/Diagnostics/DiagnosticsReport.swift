@@ -49,6 +49,10 @@ public struct DiagnosticsReport: Codable, Sendable {
         public var probeDetails: [String: String]
         public var warning: String?
         public var requestedValue: Float?
+        /// DDC I2C chip address as hex (`"0x37"` normally, `"0xb7"` behind an MCDP29xx bridge — see
+        /// `AppleSiliconAVServiceTransport.chipAddress`). `nil` when the caller did not supply one,
+        /// e.g. no DDC transport bound for this display.
+        public var ddcChipAddress: String?
     }
 
     public var generatedAt: Date
@@ -75,6 +79,7 @@ public enum DiagnosticsBuilder {
         warnings: [String: String],
         chosenControllers: [String: BrightnessControllerKind],
         appVersion: String,
+        ddcChipAddresses: [String: UInt32] = [:],
         now: Date = Date()
     ) -> DiagnosticsReport {
         let environment = DiagnosticsReport.Environment(
@@ -131,7 +136,8 @@ public enum DiagnosticsBuilder {
                 probeDetails: Dictionary(
                     uniqueKeysWithValues: (probeDetails[display.id] ?? [:]).map { ($0.key.rawValue, $0.value) }),
                 warning: warnings[display.id],
-                requestedValue: brightnessStates[display.id]?.requestedValue)
+                requestedValue: brightnessStates[display.id]?.requestedValue,
+                ddcChipAddress: ddcChipAddresses[display.id].map { "0x\(String($0, radix: 16))" })
         }
 
         return DiagnosticsReport(

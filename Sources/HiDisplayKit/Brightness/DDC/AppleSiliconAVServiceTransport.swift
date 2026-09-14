@@ -16,15 +16,27 @@ public final class AppleSiliconAVServiceTransport: DDCTransport, @unchecked Send
     public var isUsable: Bool { avService != nil }
     /// Why binding failed, for the diagnostics report.
     public let bindFailureReason: String?
+    /// The I2C chip address to use for this display: `DDC.chipAddress` (0x37) normally, or
+    /// `DDC.mcdp29xxChipAddress` (0xB7) when it is behind Apple's MCDP29xx bridge. See
+    /// `isBehindMCDP29xxBridge`.
+    public let chipAddress: UInt32
+    /// Whether this display sits behind Apple's MCDP29xx USB-C↔DisplayPort bridge (some docks, hubs,
+    /// and Apple's own USB-C↔DP cables). Every I2C call at the normal chip address NAKs immediately on
+    /// these, which otherwise looks identical to "no I2C channel at all" (docs/ddc.md).
+    public let isBehindMCDP29xxBridge: Bool
 
     private let avService: CFTypeRef?
     private let shim = IOAVServiceShim.shared
+    /// Every I2C call for this display runs here, one at a time. See `onIOQueue`.
+    private let ioQueue = DispatchQueue(label: "com.hidisplay.ddc.i2c", qos: .userInitiated)
 
     /// - Parameter identity: the display to bind to. Only its vendor/product/serial are used.
     public init(identity: DisplayIdentity) {
         guard IOAVServiceShim.shared.isAvailable else {
             avService = nil
             bindFailureReason = IOAVServiceShim.shared.unavailableReason ?? "IOAVService unavailable"
+            chipAddress = DDC.chipAddress
+            isBehindMCDP29xxBridge = false
             return
         }
 
@@ -44,6 +56,8 @@ public final class AppleSiliconAVServiceTransport: DDCTransport, @unchecked Send
             avService = nil
             bindFailureReason = "no display unit matched vendor 0x\(String(identity.vendorID, radix: 16))"
                 + "/product 0x\(String(identity.productID, radix: 16))"
+            chipAddress = DDC.chipAddress
+            isBehindMCDP29xxBridge = false
             Log.ddcTransport.notice("DDC bind failed: no matching display unit")
             return
         }
@@ -54,6 +68,8 @@ public final class AppleSiliconAVServiceTransport: DDCTransport, @unchecked Send
             avService = nil
             bindFailureReason = "\(targetTokens.count) indistinguishable display units matched; refusing "
                 + "to bind to avoid sending commands to the wrong display"
+            chipAddress = DDC.chipAddress
+            isBehindMCDP29xxBridge = false
             Log.ddcTransport.notice("ambiguous display unit match; DDC disabled for this display")
             return
         }
@@ -74,22 +90,47 @@ public final class AppleSiliconAVServiceTransport: DDCTransport, @unchecked Send
         }
         defer { candidates.forEach { IOObjectRelease($0) } }
 
+        var resolvedChipAddress = DDC.chipAddress
+        var resolvedIsBehindBridge = false
+
         if candidates.isEmpty {
             reason = "no external DCPAVServiceProxy found for display unit \(token)"
         } else {
             created = IOAVServiceShim.shared.makeService(for: candidates[0])
             if created == nil {
                 reason = "IOAVServiceCreateWithService returned null for \(token)"
+            } else {
+                // The bridge announces itself on the *parent* of the DCPAVServiceProxy we just bound,
+                // not on the node itself — see `IORegistryAccess.parentStringProperty`.
+                let providerClass = IORegistryAccess.parentStringProperty(candidates[0], "EPICProviderClass")
+                resolvedChipAddress = Self.chipAddress(forProviderClass: providerClass)
+                resolvedIsBehindBridge = resolvedChipAddress == DDC.mcdp29xxChipAddress
             }
         }
 
         avService = created
         bindFailureReason = reason
+        chipAddress = resolvedChipAddress
+        isBehindMCDP29xxBridge = resolvedIsBehindBridge
         if created != nil {
-            Log.ddcTransport.debug("bound IOAVService for \(identity.stableKey, privacy: .public)")
+            Log.ddcTransport.notice("""
+                bound IOAVService for \(identity.stableKey, privacy: .public), chip \
+                0x\(String(resolvedChipAddress, radix: 16), privacy: .public)\
+                \(resolvedIsBehindBridge ? " (MCDP29xx bridge)" : "", privacy: .public)
+                """)
         } else if let reason {
             Log.ddcTransport.notice("DDC bind failed: \(reason, privacy: .public)")
         }
+    }
+
+    /// Chip address to use for a display whose bound `DCPAVServiceProxy` has `providerClass` as its
+    /// parent's `EPICProviderClass`. Factored out as a pure function so the MCDP29xx bridge decision is
+    /// unit-testable without hardware or an IORegistry lookup — see `MCDP29xxDetectionTests`.
+    ///
+    /// `"AppleDCPMCDP29XX"` is the class name m1ddc matches on (`isMCDP29XXProxy()`); anything else,
+    /// including `nil` when the property is absent, means the display is not behind the bridge.
+    static func chipAddress(forProviderClass providerClass: String?) -> UInt32 {
+        providerClass == "AppleDCPMCDP29XX" ? DDC.mcdp29xxChipAddress : DDC.chipAddress
     }
 
     /// Display unit tokens whose metadata matches `identity`.
@@ -148,16 +189,17 @@ public final class AppleSiliconAVServiceTransport: DDCTransport, @unchecked Send
     }
 
     public func write(_ bytes: [UInt8]) async throws {
-        guard let avService else { throw DDCError.unsupported(reason: bindFailureReason ?? "not bound") }
-        let buffer = bytes
-        let status = buffer.withUnsafeBytes { raw -> IOReturn in
-            guard let base = raw.baseAddress else { return kIOReturnBadArgument }
-            return shim.write(
-                service: avService,
-                chipAddress: DDC.chipAddress,
-                offset: DDC.dataOffset,
-                from: base,
-                length: UInt32(raw.count))
+        guard avService != nil else { throw DDCError.unsupported(reason: bindFailureReason ?? "not bound") }
+        let status = await onIOQueue { [self, shim] in
+            bytes.withUnsafeBytes { raw -> IOReturn in
+                guard let avService, let base = raw.baseAddress else { return kIOReturnBadArgument }
+                return shim.write(
+                    service: avService,
+                    chipAddress: chipAddress,
+                    offset: DDC.dataOffset,
+                    from: base,
+                    length: UInt32(raw.count))
+            }
         }
         guard status == kIOReturnSuccess else {
             throw status == kIOReturnTimeout ? DDCError.timeout : DDCError.ioError(code: status)
@@ -165,20 +207,36 @@ public final class AppleSiliconAVServiceTransport: DDCTransport, @unchecked Send
     }
 
     public func read(length: Int) async throws -> [UInt8] {
-        guard let avService else { throw DDCError.unsupported(reason: bindFailureReason ?? "not bound") }
-        var buffer = [UInt8](repeating: 0, count: length)
-        let status = buffer.withUnsafeMutableBytes { raw -> IOReturn in
-            guard let base = raw.baseAddress else { return kIOReturnBadArgument }
-            return shim.read(
-                service: avService,
-                chipAddress: DDC.chipAddress,
-                offset: DDC.dataOffset,
-                into: base,
-                length: UInt32(raw.count))
+        guard avService != nil else { throw DDCError.unsupported(reason: bindFailureReason ?? "not bound") }
+        let (status, buffer) = await onIOQueue { [self, shim] () -> (IOReturn, [UInt8]) in
+            var buffer = [UInt8](repeating: 0, count: length)
+            let status = buffer.withUnsafeMutableBytes { raw -> IOReturn in
+                guard let avService, let base = raw.baseAddress else { return kIOReturnBadArgument }
+                return shim.read(
+                    service: avService,
+                    chipAddress: chipAddress,
+                    offset: DDC.dataOffset,
+                    into: base,
+                    length: UInt32(raw.count))
+            }
+            return (status, buffer)
         }
         guard status == kIOReturnSuccess else {
             throw status == kIOReturnTimeout ? DDCError.timeout : DDCError.ioError(code: status)
         }
         return buffer
+    }
+
+    /// Runs one IOKit call on the transport's serial queue.
+    ///
+    /// `IOAVServiceReadI2C`/`WriteI2C` block for the whole bus transaction and cannot be cancelled.
+    /// Called directly from an `async` function they pinned a cooperative-pool thread for the
+    /// duration — three monitors with slow buses could starve every other task in the process,
+    /// including discovery. A serial queue per transport also makes the hardware order the call
+    /// order on its own, independently of `DDCCommandQueue`'s bus token.
+    private func onIOQueue<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            ioQueue.async { continuation.resume(returning: body()) }
+        }
     }
 }

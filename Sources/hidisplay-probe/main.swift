@@ -101,6 +101,10 @@ func probeBrightness() async {
             // bound but the monitor did not answer" are completely different problems.
             let transport = AppleSiliconAVServiceTransport(identity: device.identity)
             print("transport: \(transport.isUsable ? "BOUND" : "not bound — \(transport.bindFailureReason ?? "?")")")
+            if transport.isUsable {
+                let chipHex = "0x\(String(transport.chipAddress, radix: 16))"
+                print("chip     : \(transport.isBehindMCDP29xxBridge ? "\(chipHex) (MCDP29xx bridge)" : chipHex)")
+            }
         }
 
         let ddcResult = await ddc.probe(display: device)
@@ -274,8 +278,10 @@ func sweepDDCWireFormat() async {
         let headless = Array(full.dropFirst())                     //    82 01 10 AC
         let shapes = [("with 0x51", full), ("without 0x51", headless)]
         // 0x37 is the DDC/CI address; 0x51 the conventional sub-address. 0x00 covers controllers that
-        // treat the whole frame as the payload, and 0x6E the raw unshifted display address.
-        let routes: [(chip: UInt32, offset: UInt32)] = [(0x37, 0x51), (0x37, 0x00), (0x6E, 0x51)]
+        // treat the whole frame as the payload, and 0x6E the raw unshifted display address. 0xB7 is
+        // what displays behind Apple's MCDP29xx USB-C↔DisplayPort bridge answer at instead of 0x37 —
+        // see docs/ddc.md "MCDP29xx bridge chips".
+        let routes: [(chip: UInt32, offset: UInt32)] = [(0x37, 0x51), (0x37, 0x00), (0x6E, 0x51), (0xB7, 0x51)]
 
         for (label, frame) in shapes {
             for route in routes {

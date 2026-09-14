@@ -6,7 +6,7 @@
 | --- | --- |
 | Route | `IOAVServiceRead/WriteI2C` |
 | In the SDK? | **No** — see [private-apis.md](private-apis.md) |
-| Status here | Implemented, unverified on hardware |
+| Status here | Implemented, verified on a ViewSonic VX2780-2K (see `Tests/HardwareMatrix/results.md`) |
 
 ### Why there is no Intel transport
 
@@ -57,6 +57,23 @@ monitor is not.
 
 The registry-node order is also not guaranteed to match `CGGetOnlineDisplayList`, so nothing here matches
 by index.
+
+### MCDP29xx bridge chips
+
+Some docks, hubs, and Apple's own USB-C↔DisplayPort cables put a Parade MCDP29xx bridge chip between the
+Mac and the monitor. Every I2C call at the normal DDC/CI chip address `0x37` NAKs immediately on these —
+a signature identical to "no I2C channel at all" (`0xe0114000`, below) unless you know to ask elsewhere.
+
+The bridge announces itself in the registry, not on the `DCPAVServiceProxy` node itself but on its
+**parent**: `EPICProviderClass == "AppleDCPMCDP29XX"`. `AppleSiliconAVServiceTransport` checks this once
+at bind time (`IORegistryAccess.parentStringProperty`) and, when it matches, uses chip address `0xB7`
+(`DDC.mcdp29xxChipAddress`) for every read and write on that display instead of `0x37`. The reply delay
+needs no change — `DDC.replyDelay` is already 50 ms, at least as long as displays behind the bridge need.
+
+Technique and constants are from [m1ddc](https://github.com/waydabber/m1ddc)
+(`sources/ioregistry.m` `isMCDP29XXProxy()`, `headers/ioregistry.h` `DDC_CHIP_ADDRESS_MCDP29XX`,
+`headers/i2c.h` `DDC_MCDP_READ_WAIT`). `hidisplay-probe`'s Brightness section prints the chip address
+used for each display, and `--ddc-sweep` includes `0xB7` in the addresses it tries.
 
 ## Wire format
 

@@ -10,6 +10,12 @@ public enum VCPCode: UInt8, Sendable {
 public enum DDC {
     /// I2C chip address for DDC/CI (0x6E >> 1).
     public static let chipAddress: UInt32 = 0x37
+    /// I2C chip address for displays behind Apple's MCDP29xx USB-C↔DisplayPort bridge (some docks,
+    /// hubs, and Apple's own USB-C↔DP cables). Every I2C call at `chipAddress` NAKs immediately on
+    /// these — a failure indistinguishable from "no I2C channel at all" (see docs/ddc.md) until the
+    /// bridge is detected and this address used instead. Value and detection technique from m1ddc
+    /// (`headers/ioregistry.h` `DDC_CHIP_ADDRESS_MCDP29XX`).
+    public static let mcdp29xxChipAddress: UInt32 = 0xB7
     /// Sub-address the frame is written to / read from.
     public static let dataOffset: UInt32 = 0x51
     /// Destination address used as the checksum seed for host→display frames.
@@ -54,6 +60,8 @@ public enum DDC {
     /// frame, `6E 88 02 00 10 00 00 64 00 4B 8B`, whose bytes XOR to 0xDB: 0xDB ^ 0x8B is 0x50.
     public static let replyChecksumSeed: UInt8 = 0x50
     /// MCCS asks for ~40 ms between a request and its reply. Some panels need more; this is the floor.
+    /// Also covers displays behind the MCDP29xx bridge, which m1ddc measured as needing 50 ms
+    /// (`DDC_MCDP_READ_WAIT`) — no separate delay is needed for that case.
     public static let replyDelay: Duration = .milliseconds(50)
     /// Minimum spacing between consecutive host frames. DDC/CI 1.1 asks for at least 50 ms between
     /// commands; this was 40 ms — fine for every panel on the test bench, but below the spec's
