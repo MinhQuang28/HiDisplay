@@ -1,7 +1,7 @@
 import HiDisplayKit
 import SwiftUI
 
-/// HiDisplay — menu-bar HiDPI and brightness control for macOS 26+.
+/// HiDisplay — menu-bar HiDPI and brightness control for macOS 15+.
 ///
 /// Original codebase. Public APIs throughout, except for the two documented private-API shims in
 /// `HiDisplayKit/PlatformShims`, which are required for DDC and native brightness on Apple Silicon and

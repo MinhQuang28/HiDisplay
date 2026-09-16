@@ -1,6 +1,6 @@
 # HiDisplay
 
-A menu-bar app for macOS 26+ that does two things macOS leaves out: **HiDPI resolutions on displays that
+A menu-bar app for macOS 15+ that does two things macOS leaves out: **HiDPI resolutions on displays that
 don't get them**, and **brightness control for external monitors**.
 
 Open source, no dependencies, no background daemon, and nothing that requires disabling SIP.
@@ -84,7 +84,7 @@ costs, and lets you pin an identity manually when it genuinely cannot tell two m
 
 ## Requirements
 
-- macOS 26.0 (Tahoe) or later.
+- macOS 15.0 (Sequoia) or later.
 - Apple Silicon (M-series) only. Intel Macs are not supported.
 - No permission is required for the core features — sliders, HiDPI generation and diagnostics all work
   with nothing granted. Two optional things ask: **Accessibility** for the brightness keys, and one

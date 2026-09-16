@@ -199,9 +199,36 @@ private struct OSDView: View {
     }
 }
 
-/// Liquid Glass, as the system HUD uses: it adapts to what is behind it and to the desktop appearance.
+/// Liquid Glass on macOS 26 and later; the HUD material underneath that.
+///
+/// `glassEffect` adapts to what is behind it and to the desktop appearance, which is how the system
+/// HUD behaves now. The fallback keeps the pre-26 convention — dark material regardless of appearance —
+/// because that is what those systems' own HUD looks like, and a light capsule next to it would be
+/// the odd one out.
 private struct GlassBackground: View {
     var body: some View {
-        Color.clear.glassEffect(.regular, in: Capsule())
+        if #available(macOS 26.0, *) {
+            Color.clear.glassEffect(.regular, in: Capsule())
+        } else {
+            VisualEffectBackground()
+                .clipShape(Capsule())
+                .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
+                .environment(\.colorScheme, .dark)
+        }
     }
+}
+
+/// The system's HUD material, for macOS 15.
+private struct VisualEffectBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .hudWindow
+        view.blendingMode = .behindWindow
+        view.state = .active
+        // The pre-26 HUD is dark whatever the desktop appearance.
+        view.appearance = NSAppearance(named: .vibrantDark)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
