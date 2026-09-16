@@ -1,19 +1,48 @@
 import HiDisplayKit
 import SwiftUI
 
+/// The settings sections, as a plain segmented control rather than a `TabView`.
+///
+/// On macOS 26 a `Settings` scene's `TabView` renders as a Liquid Glass toolbar — oversized icons on a
+/// floating pill — which looks out of place for a small utility window. A segmented picker keeps the
+/// classic, compact preferences look.
+private enum SettingsSection: String, CaseIterable, Identifiable {
+    case general = "General"
+    case displays = "Displays"
+    case hiDPI = "HiDPI"
+    case keyboard = "Keyboard"
+    case diagnostics = "Diagnostics"
+
+    var id: String { rawValue }
+}
+
 struct SettingsView: View {
+
+    @State private var section: SettingsSection = .general
+
     var body: some View {
-        TabView {
-            GeneralSettingsTab()
-                .tabItem { Label("General", systemImage: "gearshape") }
-            DisplaysSettingsTab()
-                .tabItem { Label("Displays", systemImage: "display") }
-            HiDPISettingsTab()
-                .tabItem { Label("HiDPI", systemImage: "square.resize.up") }
-            KeyboardSettingsTab()
-                .tabItem { Label("Keyboard", systemImage: "keyboard") }
-            DiagnosticsSettingsTab()
-                .tabItem { Label("Diagnostics", systemImage: "stethoscope") }
+        VStack(spacing: 0) {
+            Picker("Section", selection: $section) {
+                ForEach(SettingsSection.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
+
+            Divider()
+
+            Group {
+                switch section {
+                case .general: GeneralSettingsTab()
+                case .displays: DisplaysSettingsTab()
+                case .hiDPI: HiDPISettingsTab()
+                case .keyboard: KeyboardSettingsTab()
+                case .diagnostics: DiagnosticsSettingsTab()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         // A minimum rather than a fixed size: the HiDPI tab is content-heavy, and pinning the
         // window's height is what pushed its Install button out of sight in an earlier version.
