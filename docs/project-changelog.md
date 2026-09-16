@@ -2,6 +2,16 @@
 
 Newest first. Versions are the value of `AppModel.version`; tags are `v<version>`.
 
+## 0.7.1 — 2026-09-16
+
+Minimum macOS is back down to 15 (Sequoia). 0.7.0 required 26.
+
+### Changed
+- **Settings window uses a segmented section picker** instead of a `TabView`, whose macOS 26 rendering
+  is an oversized Liquid Glass toolbar.
+- **Deployment target macOS 15.** The brightness HUD keeps Liquid Glass on macOS 26 and later behind
+  an availability check; macOS 15 gets the dark HUD material in the same capsule.
+
 ## 0.7.0 — 2026-09-14
 
 Breaking: minimum macOS is now 26 (Tahoe). Profile schema 2 migrates automatically on first launch.
