@@ -23,10 +23,10 @@ final class BrightnessOSD {
     private static let visibleDuration: TimeInterval = 1.2
     /// The system HUD fades rather than vanishing. Appearing is instant, so only the exit is animated.
     private static let fadeDuration: TimeInterval = 0.25
-    fileprivate static let width: CGFloat = 300
-    fileprivate static let height: CGFloat = 64
+    fileprivate static let width: CGFloat = 240
+    fileprivate static let height: CGFloat = 51
     /// Extra height for the caption row, used only when the panel could not sit on its own display.
-    private static let captionHeight: CGFloat = 18
+    private static let captionHeight: CGFloat = 14
     /// Gap between the menu bar and the capsule.
     private static let topInset: CGFloat = 10
     /// Right margin as a share of the display width, so the capsule sits at the same relative spot on
@@ -154,8 +154,8 @@ private struct OSDView: View {
 
     /// The system HUD's step count: one segment per brightness-key press.
     private static let segments = 16
-    private static let barHeight: CGFloat = 5
-    private static let segmentGap: CGFloat = 2.5
+    private static let barHeight: CGFloat = 4
+    private static let segmentGap: CGFloat = 1
     /// Square-cornered dashes — the system bar reads as one dotted line, not a row of pills.
     private static let segment = Rectangle()
 
@@ -182,25 +182,25 @@ private struct OSDView: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            HStack(spacing: 18) {
+            HStack(spacing: 14) {
                 Image(systemName: "sun.max")
-                    .font(.system(size: 24, weight: .regular))
+                    .font(.system(size: 19, weight: .regular))
                     .symbolRenderingMode(.monochrome)
-                    .frame(width: 28)
+                    .frame(width: 22)
                 bar
             }
-            .padding(.horizontal, 24)
+            .padding(.horizontal, 19)
 
             // Normally absent. The HUD appears on the display it is describing, which says which
             // display far better than a caption does; the name is a fallback for the one case
             // where positioning fell through to another screen.
             if let name = model.displayName {
                 Text(name)
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.white.opacity(0.7))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .padding(.horizontal, 24)
+                    .padding(.horizontal, 19)
             }
         }
         .frame(width: BrightnessOSD.width)

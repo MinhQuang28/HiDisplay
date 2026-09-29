@@ -5,9 +5,9 @@ Newest first. Versions are the value of `AppModel.version`; tags are `v<version>
 ## Unreleased
 
 ### Changed
-- **Brightness HUD matches macOS 27**: a wider, taller glass capsule (300 × 64 pt), an outlined sun
-  glyph, and a sixteen-segment level bar of square-cornered dashes in white on clear glass. The segment the level
-  falls inside fills partially, so ⌥ quarter steps stay visible.
+- **Brightness HUD matches macOS 27**: a clear glass capsule (240 × 51 pt), an outlined sun glyph,
+  and a sixteen-segment level bar of tightly spaced, square-cornered white dashes. The segment the
+  level falls inside fills partially, so ⌥ quarter steps stay visible.
 
 ## 0.7.1 — 2026-09-16
 
