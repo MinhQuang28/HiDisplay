@@ -99,9 +99,14 @@ final class BrightnessOSD {
             defer: false)
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        // The shadow follows the capsule's alpha, not the window rectangle, so it reads as the
-        // floating glass slab the system HUD is rather than as a card.
-        panel.hasShadow = true
+        // Clear glass is almost fully transparent, so a window shadow — computed from the content's
+        // alpha — survives only as a dark ring around the capsule. The glass draws its own rim and
+        // depth; only the opaque pre-26 material needs the window shadow to float.
+        if #available(macOS 26.0, *) {
+            panel.hasShadow = false
+        } else {
+            panel.hasShadow = true
+        }
         panel.ignoresMouseEvents = true
         panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]

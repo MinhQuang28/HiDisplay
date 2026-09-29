@@ -9,6 +9,10 @@ Newest first. Versions are the value of `AppModel.version`; tags are `v<version>
   and a sixteen-segment level bar of tightly spaced, square-cornered white dashes. The segment the
   level falls inside fills partially, so ⌥ quarter steps stay visible.
 
+### Fixed
+- **No dark ring around the brightness HUD** on macOS 26 and later: the window shadow is off there,
+  since clear glass left it visible only as a dark outline.
+
 ## 0.7.1 — 2026-09-16
 
 Minimum macOS is back down to 15 (Sequoia). 0.7.0 required 26.
