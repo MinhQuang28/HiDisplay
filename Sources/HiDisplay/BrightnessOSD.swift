@@ -9,10 +9,10 @@ import SwiftUI
 /// registered, or which display it hit. This fills that gap, and deliberately only for external
 /// displays: drawing a second HUD next to the system's own would be worse than drawing none.
 ///
-/// The shape follows the macOS 26 HUD: a compact capsule tucked under the menu bar towards the
-/// top-right of the display, glyph on the left and a continuous level bar on the right, in Liquid Glass. The old
-/// 200-point square in the lower middle of the screen was the pre-26 HUD, and next to the current
-/// system one it read as a different operating system.
+/// The shape follows the macOS 27 HUD: a wide glass capsule tucked under the menu bar towards the
+/// top-right of the display, an outlined sun on the left and a sixteen-segment level bar on the right,
+/// drawn in white. The old 200-point square in the lower middle of the screen was the pre-26 HUD, and
+/// next to the current system one it read as a different operating system.
 ///
 /// It is a non-activating panel: it must never take focus, never appear in the app switcher, and never
 /// interrupt what the user is typing into.
@@ -23,8 +23,8 @@ final class BrightnessOSD {
     private static let visibleDuration: TimeInterval = 1.2
     /// The system HUD fades rather than vanishing. Appearing is instant, so only the exit is animated.
     private static let fadeDuration: TimeInterval = 0.25
-    private static let width: CGFloat = 236
-    private static let height: CGFloat = 44
+    fileprivate static let width: CGFloat = 300
+    fileprivate static let height: CGFloat = 64
     /// Extra height for the caption row, used only when the panel could not sit on its own display.
     private static let captionHeight: CGFloat = 18
     /// Gap between the menu bar and the capsule.
@@ -146,21 +146,32 @@ private final class OSDModel: ObservableObject {
     @Published var displayName: String?
 }
 
-/// The capsule: glyph, then a continuous level bar. Proportions follow the macOS 26 HUD — a slim
-/// pill rather than a square, one line tall, the bar doing the talking.
+/// The capsule: an outlined sun, then a level bar of sixteen segments. Proportions follow the
+/// macOS 27 HUD — a wide glass pill, glyph on the left, the segmented bar taking the rest of the row.
 private struct OSDView: View {
 
     @ObservedObject var model: OSDModel
 
-    private static let barHeight: CGFloat = 6
+    /// The system HUD's step count: one segment per brightness-key press.
+    private static let segments = 16
+    private static let barHeight: CGFloat = 5
+    private static let segmentGap: CGFloat = 2.5
+    /// Flat dashes with softened corners, not pills — the system bar reads as one dotted line.
+    private static let segment = RoundedRectangle(cornerRadius: 1.5, style: .continuous)
 
+    /// Sixteen segments, filled left to right. The segment the level falls inside is filled
+    /// proportionally, so the quarter steps that ⌥-F1/F2 make are still visible.
     private var bar: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                Capsule().fill(.primary.opacity(0.18))
-                Capsule()
-                    .fill(.primary)
-                    .frame(width: max(Self.barHeight, geometry.size.width * CGFloat(model.value)))
+        let level = CGFloat(model.value) * CGFloat(Self.segments)
+        return HStack(spacing: Self.segmentGap) {
+            ForEach(0..<Self.segments, id: \.self) { index in
+                let fill = min(max(level - CGFloat(index), 0), 1)
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Self.segment.fill(.white.opacity(0.25))
+                        Self.segment.fill(.white).frame(width: geometry.size.width * fill)
+                    }
+                }
             }
         }
         .frame(height: Self.barHeight)
@@ -171,14 +182,14 @@ private struct OSDView: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            HStack(spacing: 12) {
-                Image(systemName: "sun.max.fill")
-                    .font(.system(size: 17, weight: .medium))
+            HStack(spacing: 18) {
+                Image(systemName: "sun.max")
+                    .font(.system(size: 24, weight: .regular))
                     .symbolRenderingMode(.monochrome)
-                    .frame(width: 20)
+                    .frame(width: 28)
                 bar
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 24)
 
             // Normally absent. The HUD appears on the display it is describing, which says which
             // display far better than a caption does; the name is a fallback for the one case
@@ -186,16 +197,20 @@ private struct OSDView: View {
             if let name = model.displayName {
                 Text(name)
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.7))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, 24)
             }
         }
-        .frame(width: 236)
-        .frame(minHeight: 44)
-        .foregroundStyle(.primary)
+        .frame(width: BrightnessOSD.width)
+        .frame(minHeight: BrightnessOSD.height)
+        // The macOS 27 HUD draws white glyphs on its glass over light and dark desktops alike; the
+        // dark glass variant underneath keeps them readable over a white window.
+        .foregroundStyle(.white)
+        .shadow(color: .black.opacity(0.2), radius: 1, y: 0.5)
         .background(GlassBackground())
+        .environment(\.colorScheme, .dark)
     }
 }
 

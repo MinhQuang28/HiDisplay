@@ -2,6 +2,13 @@
 
 Newest first. Versions are the value of `AppModel.version`; tags are `v<version>`.
 
+## Unreleased
+
+### Changed
+- **Brightness HUD matches macOS 27**: a wider, taller glass capsule (300 × 64 pt), an outlined sun
+  glyph, and a sixteen-segment level bar in white instead of a continuous bar. The segment the level
+  falls inside fills partially, so ⌥ quarter steps stay visible.
+
 ## 0.7.1 — 2026-09-16
 
 Minimum macOS is back down to 15 (Sequoia). 0.7.0 required 26.
