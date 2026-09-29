@@ -156,8 +156,8 @@ private struct OSDView: View {
     private static let segments = 16
     private static let barHeight: CGFloat = 5
     private static let segmentGap: CGFloat = 2.5
-    /// Flat dashes with softened corners, not pills — the system bar reads as one dotted line.
-    private static let segment = RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+    /// Square-cornered dashes — the system bar reads as one dotted line, not a row of pills.
+    private static let segment = Rectangle()
 
     /// Sixteen segments, filled left to right. The segment the level falls inside is filled
     /// proportionally, so the quarter steps that ⌥-F1/F2 make are still visible.
@@ -205,25 +205,25 @@ private struct OSDView: View {
         }
         .frame(width: BrightnessOSD.width)
         .frame(minHeight: BrightnessOSD.height)
-        // The macOS 27 HUD draws white glyphs on its glass over light and dark desktops alike; the
-        // dark glass variant underneath keeps them readable over a white window.
+        // The macOS 27 HUD draws white glyphs on clear glass over light and dark desktops alike.
+        // The glass barely darkens what is behind it, so a soft shadow is what keeps the white
+        // readable over a bright window.
         .foregroundStyle(.white)
-        .shadow(color: .black.opacity(0.2), radius: 1, y: 0.5)
+        .shadow(color: .black.opacity(0.3), radius: 2, y: 0.5)
         .background(GlassBackground())
-        .environment(\.colorScheme, .dark)
     }
 }
 
-/// Liquid Glass on macOS 26 and later; the HUD material underneath that.
+/// Clear Liquid Glass on macOS 26 and later; the HUD material underneath that.
 ///
-/// `glassEffect` adapts to what is behind it and to the desktop appearance, which is how the system
-/// HUD behaves now. The fallback keeps the pre-26 convention — dark material regardless of appearance —
-/// because that is what those systems' own HUD looks like, and a light capsule next to it would be
-/// the odd one out.
+/// The `.clear` variant rather than `.regular`: the macOS 27 HUD is nearly transparent, the desktop
+/// showing through with only the rim highlight marking the edge. The fallback keeps the pre-26
+/// convention — dark material regardless of appearance — because that is what those systems' own HUD
+/// looks like, and a light capsule next to it would be the odd one out.
 private struct GlassBackground: View {
     var body: some View {
         if #available(macOS 26.0, *) {
-            Color.clear.glassEffect(.regular, in: Capsule())
+            Color.clear.glassEffect(.clear, in: Capsule())
         } else {
             VisualEffectBackground()
                 .clipShape(Capsule())
