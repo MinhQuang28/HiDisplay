@@ -211,7 +211,7 @@ told what is unusual about it first.
 
 ## Installing
 
-Two routes, both in `HiDPISettingsTab`:
+Two routes, both on the Apply step of `HiDPIWizard`:
 
 * **Install** plans against the real `/Library/Displays` root, shows the full plan (destination,
   what is replaced, what is carried over, the undo command), writes a recovery package into
