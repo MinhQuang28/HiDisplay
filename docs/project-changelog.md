@@ -2,7 +2,7 @@
 
 Newest first. Versions are the value of `AppModel.version`; tags are `v<version>`.
 
-## Unreleased
+## 0.8.0 — 2026-10-15
 
 ### Changed
 - **Settings has a sidebar.** The segmented picker is replaced by a `NavigationSplitView`: displays
@@ -36,6 +36,10 @@ Newest first. Versions are the value of `AppModel.version`; tags are `v<version>
   level falls inside fills partially, so ⌥ quarter steps stay visible.
 - **No dark ring around the brightness HUD** on macOS 26 and later: the window shadow is off there,
   since clear glass left it visible only as a dark outline.
+- **Brightness Keys could not be selected in the sidebar.** The permission badge was applied after
+  `.tag`, which stopped the list matching the row to its route.
+- **No sidebar toggle in the Settings toolbar.** The removal was applied to the split view, where it
+  is ignored; it now sits on the sidebar column, the only place it takes effect.
 
 ## 0.7.1 — 2026-09-16
 
