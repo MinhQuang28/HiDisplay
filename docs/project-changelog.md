@@ -12,6 +12,11 @@ Newest first. Versions are the value of `AppModel.version`; tags are `v<version>
 - **One display page per monitor** replaces the list-and-detail Displays tab: overview, resolution,
   brightness (with a slider, the controller choice, and the probe results in a disclosure) and
   identity, including the "This is a separate display" action that was only in the menu.
+- **HiDPI is a three-step wizard**: Choose, Review, Apply, with the actions pinned to the bottom.
+  Review shows the plan *before* the Install button — the file that will be written, whether one is
+  already there and how many of its entries are kept, what is not carried over, and the undo
+  command — using the same `planInstall` the confirmation alert uses. The long warning is one line
+  with a disclosure; validation errors sit next to the Review button they disable.
 - **The selected display is shared.** Choosing a monitor in the sidebar carries to the HiDPI page's
   picker and back; each tab used to keep its own.
 - **"Keyboard" is now "Brightness Keys"**, which is all it ever configured.

@@ -151,7 +151,7 @@ struct SettingsDetail: View {
                     ContentUnavailableView(
                         "Display disconnected", systemImage: "display.trianglebadge.exclamationmark")
                 }
-            case .hiDPI: HiDPISettingsTab()
+            case .hiDPI: HiDPIWizard()
             case .general: GeneralPage()
             case .brightnessKeys: BrightnessKeysPage()
             case .diagnostics: DiagnosticsPage()

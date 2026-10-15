@@ -1,6 +1,6 @@
 # Plan: thiết kế lại UI/UX HiDisplay — sidebar bên trái + rà soát tính năng so với đối thủ
 
-Ngày: 2026-10-15 · Phiên bản hiện tại: 0.7.1 · Trạng thái: **đề xuất, chưa triển khai**
+Ngày: 2026-10-15 · Phiên bản hiện tại: 0.7.1 · Trạng thái: **giai đoạn 0, 1 và 3 đã triển khai trên nhánh `claude/ui-ux-left-menu-0q82gw`; giai đoạn 2, 4, 5 còn lại**
 
 Tài liệu này gồm ba phần:
 
