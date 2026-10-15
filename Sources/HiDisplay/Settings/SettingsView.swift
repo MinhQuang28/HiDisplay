@@ -62,8 +62,9 @@ struct SettingsSidebar: View {
 
             Section("App") {
                 sidebarLabel(.general)
-                sidebarLabel(.brightnessKeys)
-                    .badge(model.brightnessKeysEnabled && !model.isAccessibilityTrusted ? "!" : nil)
+                sidebarLabel(
+                    .brightnessKeys,
+                    badge: model.brightnessKeysEnabled && !model.isAccessibilityTrusted ? "!" : nil)
                 sidebarLabel(.diagnostics)
             }
         }
@@ -79,8 +80,11 @@ struct SettingsSidebar: View {
         }
     }
 
-    private func sidebarLabel(_ route: SettingsRoute) -> some View {
+    /// `.tag` must be the outermost modifier: a `.badge` applied after it wrapped the tagged view
+    /// and the list no longer matched the row to its route, so the row could not be selected.
+    private func sidebarLabel(_ route: SettingsRoute, badge: String? = nil) -> some View {
         Label(route.title, systemImage: route.systemImage)
+            .badge(badge)
             .tag(route)
     }
 }
