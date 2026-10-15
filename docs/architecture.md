@@ -207,6 +207,13 @@ which is exactly why nothing there is allowed to hold logic worth testing.
   so no view re-derives them. It re-publishes `BrightnessCoordinator.objectWillChange`, because SwiftUI
   does not propagate changes through a nested `ObservableObject` and the asynchronous half of the UI is
   otherwise silently dead.
+- `AppModel` also owns Settings navigation: `selectedDisplayID` and `settingsRoute`. Both are
+  reconciled on every display change, whether or not the window is open, so a route can never point
+  at a monitor that has been unplugged. The sidebar, the display page and the HiDPI page all read the
+  one selection. Errors are scoped to where they are shown (`modeChangeError`, `diagnosticsError`,
+  `sessionEndError`) rather than pooled.
+- `BrightnessCoordinator.phase(for:)` is what the UI reads to say "checking", "waiting for DDC" or
+  "using X". `controller(for:)` alone cannot tell the first two apart from "nothing available".
 - `BrightnessKeyTap` is a `CGEventTap` on system-defined events. Its one hard rule: an event that
   concerns the built-in panel is returned unmodified, so macOS keeps driving that panel and drawing its
   HUD. Only a press affecting external displays alone is consumed. A tap disabled by timeout is

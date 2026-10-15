@@ -5,11 +5,35 @@ Newest first. Versions are the value of `AppModel.version`; tags are `v<version>
 ## Unreleased
 
 ### Changed
+- **Settings has a sidebar.** The segmented picker is replaced by a `NavigationSplitView`: displays
+  on the left, one entry each, then HiDPI Overrides, General, Brightness Keys and Diagnostics. Every
+  page is a grouped `Form`. On macOS 26 the sidebar and toolbar pick up Liquid Glass; on macOS 15 it is
+  the classic source list. The window is 760 × 560 minimum. **Reset Dimming** is in the toolbar.
+- **One display page per monitor** replaces the list-and-detail Displays tab: overview, resolution,
+  brightness (with a slider, the controller choice, and the probe results in a disclosure) and
+  identity, including the "This is a separate display" action that was only in the menu.
+- **HiDPI is a three-step wizard**: Choose, Review, Apply, with the actions pinned to the bottom.
+  Review shows the plan *before* the Install button — the file that will be written, whether one is
+  already there and how many of its entries are kept, what is not carried over, and the undo
+  command — using the same `planInstall` the confirmation alert uses. The long warning is one line
+  with a disclosure; validation errors sit next to the Review button they disable.
+- **The selected display is shared.** Choosing a monitor in the sidebar carries to the HiDPI page's
+  picker and back; each tab used to keep its own.
+- **"Keyboard" is now "Brightness Keys"**, which is all it ever configured.
+- Menu and Settings say **"Checking brightness control…"** while a display's first probe runs and
+  **"Waiting for DDC…"** while a known-DDC monitor is held for its firmware, instead of "No brightness
+  control available" for both. `BrightnessCoordinator` publishes a `BrightnessPhase` per display.
+- The menu's brightness slider has a VoiceOver label naming the display, and truncated display names
+  show in full on hover.
+- Install and export errors show the error's description rather than its Swift debug dump.
+
+### Fixed
+- **Errors show where they happened.** One shared `lastError` put a failed diagnostics export under
+  the resolution picker and a failed resolution change on the Diagnostics page. Each now has its own
+  slot, and a refused log-out shows next to the button that asked for it.
 - **Brightness HUD matches macOS 27**: a clear glass capsule (240 × 51 pt), an outlined sun glyph,
   and a sixteen-segment level bar of tightly spaced, square-cornered white dashes. The segment the
   level falls inside fills partially, so ⌥ quarter steps stay visible.
-
-### Fixed
 - **No dark ring around the brightness HUD** on macOS 26 and later: the window shadow is off there,
   since clear glass left it visible only as a dark outline.
 

@@ -68,6 +68,7 @@ struct DisplaySection: View {
 
     private var brightness: Float { model.brightness.brightness(for: display.id) }
     private var controller: BrightnessControllerKind? { model.brightness.controller(for: display.id) }
+    private var phase: BrightnessPhase { model.brightness.phase(for: display.id) }
 
     /// One entry per logical size, so the menu stays short. Refresh-rate choice lives in Settings,
     /// where there is room to show it without turning this into a two-level menu.
@@ -114,6 +115,7 @@ struct DisplaySection: View {
                 Text(display.name)
                     .font(.headline)
                     .lineLimit(1)
+                    .help(display.name) // the full name, for one the fixed width truncates
                 if display.isMain {
                     Text("Main").font(.caption2).foregroundStyle(.secondary)
                 }
@@ -141,14 +143,41 @@ struct DisplaySection: View {
                         // state synchronously and hands the hardware write off, so the slider tracks
                         // the pointer even when the monitor's I2C is slow.
                         set: { model.setBrightness(Float($0), for: display) }),
-                    in: 0...1)
+                    in: 0...1
+                ) {
+                    // Hidden visually, read by VoiceOver: a bare slider announces only a percentage,
+                    // which on a two-monitor desk does not say which one it moves.
+                    Text("\(display.name) brightness")
+                }
+                .labelsHidden()
                 .controlSize(.small)
 
                 HStack {
-                    Label(controller.label, systemImage: controller.isHardware ? "bolt.fill" : "circle.lefthalf.filled")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    // A hold is not a choice: the software controller underneath is a stand-in the
+                    // app has deliberately not applied, so naming it here would claim a dim that is
+                    // not happening. Say what is actually going on instead.
+                    if phase == .heldForDDC {
+                        Label("Waiting for DDC…", systemImage: "clock")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .help("This monitor has answered DDC before and is expected to again. "
+                                + "The brightness you set is kept until it does.")
+                    } else {
+                        Label(controller.label, systemImage: controller.isHardware ? "bolt.fill" : "circle.lefthalf.filled")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                     Spacer()
+                }
+            } else if phase == .probing {
+                // The two seconds between a display appearing and its first probe, plus the probe
+                // itself. This used to read "No brightness control available", which is the opposite
+                // of what is happening.
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking brightness control…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             } else {
                 Text("No brightness control available")

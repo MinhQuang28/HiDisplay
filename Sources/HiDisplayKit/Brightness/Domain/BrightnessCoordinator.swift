@@ -18,6 +18,9 @@ public final class BrightnessCoordinator: ObservableObject {
     @Published public private(set) var probeDetails: [String: [BrightnessControllerKind: String]] = [:]
     /// Set when a user override could not be honoured.
     @Published public private(set) var warnings: [String: String] = [:]
+    /// Where each display stands in the probe cycle, so the UI can tell "still checking" and "held
+    /// for DDC" apart from "no control available". Absent means not probed yet — see `phase(for:)`.
+    @Published public private(set) var phases: [String: BrightnessPhase] = [:]
 
     /// What the UI says instead of offering a control for the built-in panel.
     public static let builtInExplanation =
@@ -132,6 +135,24 @@ public final class BrightnessCoordinator: ObservableObject {
     public func userOverride(for key: String) -> BrightnessControllerKind? { userOverrides[key] }
     public func controller(for key: String) -> BrightnessControllerKind? { chosen[key] }
 
+    /// The display's place in the probe cycle. A key the coordinator has never probed reads as
+    /// `.probing`: that is the state of every external display between appearing in the menu and
+    /// the settle that triggers its first probe, and showing it as unavailable for those seconds was
+    /// the bug this exists to fix.
+    public func phase(for key: String) -> BrightnessPhase { phases[key] ?? .probing }
+
+    /// Recomputes the published phase from the hold set and the chosen controller. Called at the
+    /// points where either changes; `.probing` is set separately, at the start of a first probe.
+    private func publishPhase(for key: String) {
+        if heldForDDC.contains(key) {
+            phases[key] = .heldForDDC
+        } else if let kind = chosen[key] {
+            phases[key] = .ready(kind)
+        } else {
+            phases[key] = .unavailable
+        }
+    }
+
     // MARK: - Lifecycle
 
     /// Handles a settled display configuration: probes new displays, drops departed ones.
@@ -142,12 +163,14 @@ public final class BrightnessCoordinator: ObservableObject {
         let liveKeys = Set(displays.map(\.id))
 
         // Tear down anything that left, before probing what arrived: a departed display's queue must
-        // stop retrying before new work is queued behind it.
-        for key in states.keys where !liveKeys.contains(key) {
+        // stop retrying before new work is queued behind it. `phases` is in the union because a
+        // display can leave while its first probe is still in flight, before it has any state.
+        for key in Set(states.keys).union(phases.keys) where !liveKeys.contains(key) {
             connectionEpoch[key, default: 0] += 1
             states.removeValue(forKey: key)
             availability.removeValue(forKey: key)
             warnings.removeValue(forKey: key)
+            phases.removeValue(forKey: key)
             chosen.removeValue(forKey: key)
             heldForDDC.remove(key)
         }
@@ -254,8 +277,14 @@ public final class BrightnessCoordinator: ObservableObject {
             chosen.removeValue(forKey: display.id)
             states.removeValue(forKey: display.id)
             warnings.removeValue(forKey: display.id)
+            phases[display.id] = .unavailable
             return
         }
+
+        // Only a *first* probe is announced as probing. A re-probe after a wake or a failed write
+        // leaves the previous controller live and the slider working, so flipping the UI to
+        // "checking…" for its duration would misreport a display that is, in fact, still controlled.
+        if chosen[display.id] == nil { phases[display.id] = .probing }
 
         // Probes run sequentially rather than concurrently: the DDC probe is the only slow one, and
         // running gamma/shade probes against the same display in parallel gains nothing while making
@@ -335,6 +364,7 @@ public final class BrightnessCoordinator: ObservableObject {
         } else {
             heldForDDC.remove(display.id)
         }
+        publishPhase(for: display.id)
 
         // What the chosen controller reported, so a display with no saved value starts the slider at
         // its real brightness instead of jumping when first touched.
@@ -422,6 +452,8 @@ public final class BrightnessCoordinator: ObservableObject {
         // failing, re-enters the hold. One-shot by the `remove`: a drag's stream of values does not
         // become a stream of probes.
         let wasHeld = heldForDDC.remove(display.id) != nil
+        // The hold is lifted for the length of this write; the probe below re-enters it or not.
+        if wasHeld { publishPhase(for: display.id) }
 
         let epoch = connectionEpoch[display.id] ?? 0
         do {
