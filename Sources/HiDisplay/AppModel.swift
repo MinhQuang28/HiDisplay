@@ -25,8 +25,54 @@ final class AppModel: ObservableObject {
     @Published var ambiguousKeys: Set<String> = []
     /// Last diagnostics export path, shown in Settings after an export.
     @Published var lastExportPath: String?
-    @Published var lastError: String?
+    // One error slot per place it is shown. A single shared `lastError` put a failed diagnostics
+    // export under the Resolution picker and a failed resolution change on the Diagnostics page.
+    /// The last resolution change that failed or could not be reverted. Shown with the picker.
+    @Published var modeChangeError: String?
+    /// The last diagnostics export that failed. Shown on the Diagnostics page.
+    @Published var diagnosticsError: String?
+    /// A log-out or restart request that macOS refused. Shown where the request was made.
+    @Published var sessionEndError: String?
     private var stopped = false
+
+    // MARK: Settings navigation
+
+    /// The display the Settings window is about: the sidebar row, the HiDPI page's picker and the
+    /// menu all read this one value, so choosing a monitor in one place carries to the others.
+    /// `nil` only before any display has been enumerated.
+    @Published var selectedDisplayID: String?
+    /// The sidebar entry the user last picked. `nil` until they pick one, in which case the window
+    /// opens on the selected display — see `resolvedSettingsRoute`.
+    @Published private(set) var settingsRoute: SettingsRoute?
+
+    /// The page to show now. Falls back to the selected display, then General, so the window never
+    /// opens on a blank detail pane.
+    var resolvedSettingsRoute: SettingsRoute {
+        if let settingsRoute { return settingsRoute }
+        if let selectedDisplayID { return .display(selectedDisplayID) }
+        return .general
+    }
+
+    func navigate(to route: SettingsRoute) {
+        if let id = route.displayID { selectedDisplayID = id }
+        settingsRoute = route
+    }
+
+    /// Keeps the selection and route pointing at a display that exists.
+    ///
+    /// Runs on every display change, not only while Settings is open: a route left pointing at a
+    /// monitor that was unplugged with the window closed would open onto nothing. The fallback
+    /// prefers an external display, which is what both the display page and HiDPI are for.
+    private func reconcileSelection(with displays: [DisplayDevice]) {
+        let live = Set(displays.map(\.id))
+        let preferred = displays.first { !$0.isBuiltIn }?.id ?? displays.first?.id
+        if selectedDisplayID.map({ !live.contains($0) }) ?? true {
+            selectedDisplayID = preferred
+        }
+        if let id = settingsRoute?.displayID, !live.contains(id) {
+            settingsRoute = preferred.map(SettingsRoute.display) ?? .general
+        }
+    }
 
     // MARK: Brightness keys
 
@@ -72,6 +118,7 @@ final class AppModel: ObservableObject {
             .sink { [weak self] displays in
                 guard let self else { return }
                 self.displays = displays
+                self.reconcileSelection(with: displays)
                 self.brightness.handleDisplaysChanged(displays)
             }
             .store(in: &cancellables)
@@ -354,9 +401,9 @@ final class AppModel: ObservableObject {
         let outcome = ModeChangeCoordinator.change(to: mode, on: display)
         switch outcome {
         case .kept, .reverted:
-            lastError = nil
+            modeChangeError = nil
         case .failed(let message):
-            lastError = "Could not change resolution: \(message)"
+            modeChangeError = "Could not change resolution: \(message)"
         }
         // A resolution change invalidates cached frames, and shade overlays are positioned from them.
         // It also clears the gamma ramp, which `handleDisplaysChanged` puts back — the reconfiguration
@@ -447,7 +494,8 @@ final class AppModel: ObservableObject {
     func endSession(_ kind: PrivilegedInstaller.SessionEnd) {
         Task {
             await profiles.flush()
-            do { try PrivilegedInstaller.endSession(kind) } catch { lastError = error.localizedDescription }
+            sessionEndError = nil
+            do { try PrivilegedInstaller.endSession(kind) } catch { sessionEndError = error.localizedDescription }
         }
     }
 
@@ -478,9 +526,10 @@ final class AppModel: ObservableObject {
             guard let url else { return }
             try data.write(to: url, options: .atomic)
             lastExportPath = url.path
+            diagnosticsError = nil
             Log.app.notice("wrote diagnostics to \(url.lastPathComponent, privacy: .public)")
         } catch {
-            lastError = "Could not write diagnostics: \(error)"
+            diagnosticsError = "Could not write diagnostics: \(error.localizedDescription)"
         }
     }
 }

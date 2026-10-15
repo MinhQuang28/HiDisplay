@@ -121,18 +121,21 @@ Or: double-click it, then System Settings → Privacy & Security → **Open Anyw
 ## Using it
 
 The app lives in the menu bar with no Dock icon. Click the display icon for per-monitor sliders, a
-resolution picker, **Sync Displays**, and **Reset Dimming**. ⌘, opens Settings:
+resolution picker, **Sync Displays**, and **Reset Dimming**. ⌘, opens Settings, laid out like System
+Settings — a sidebar on the left, one page on the right:
 
+- **Displays** — one entry per connected monitor: resolution and refresh rate, which brightness
+  controller it got and why, the identity its settings are saved under, and a slider.
+- **HiDPI Overrides** — generate, validate, preview, install or export an override for the selected display.
 - **General** — launch at login, and a second **Reset All Dimming** for when the menu is too dark to read.
-- **Displays** — resolution and refresh rate, which brightness controller each display got, why, and how
-  to override it.
-- **HiDPI** — generate, validate, preview, install or export an override.
-- **Keyboard** — brightness keys: on/off, which display they target, and the Accessibility status.
+- **Brightness Keys** — on/off, which display the keys target, and the Accessibility status.
 - **Diagnostics** — export a support report, and see whether the private-API shims resolved on your macOS.
+
+**Reset Dimming** is also in the Settings toolbar, so it is one click away from either window.
 
 ### Installing a generated override
 
-Settings → HiDPI → select resolutions → **Install…**. You get a summary of exactly what will change
+Settings → HiDPI Overrides → select resolutions → **Install…**. You get a summary of exactly what will change
 before any password prompt; approving it backs the old file up into `~/Downloads`, writes the new one
 with a single authorization, and verifies the result by hash.
 

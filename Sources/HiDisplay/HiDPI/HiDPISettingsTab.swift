@@ -11,7 +11,6 @@ struct HiDPISettingsTab: View {
 
     @EnvironmentObject private var model: AppModel
 
-    @State private var selection: String?
     @State private var chosen: Set<String> = []
     @State private var customWidth = ""
     @State private var customResolutions: [ScaledResolution] = []
@@ -32,8 +31,11 @@ struct HiDPISettingsTab: View {
         model.displays.filter(\.capabilities.supportsHiDPIOverride)
     }
 
+    /// The app-wide selected display when it can take an override, else the first that can. The
+    /// selection is shared with the sidebar on purpose: picking a monitor there and coming here
+    /// should not mean picking it again.
     private var display: DisplayDevice? {
-        eligibleDisplays.first { $0.id == selection } ?? eligibleDisplays.first
+        eligibleDisplays.first { $0.id == model.selectedDisplayID } ?? eligibleDisplays.first
     }
 
     /// Every aspect-correct step for the panel, the same set the scaling slider moves through.
@@ -135,7 +137,7 @@ struct HiDPISettingsTab: View {
         VStack(alignment: .leading, spacing: 0) {
             Picker("Display", selection: Binding(
                 get: { display?.id ?? "" },
-                set: { selection = $0 })
+                set: { model.selectedDisplayID = $0 })
             ) {
                 ForEach(eligibleDisplays) { Text($0.name).tag($0.id) }
             }
@@ -441,6 +443,10 @@ struct HiDPISettingsTab: View {
             if let error = exportError {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
+            // A refused log-out or restart lands here, next to the buttons that asked for it.
+            if let error = model.sessionEndError {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
         }
     }
 
@@ -455,7 +461,7 @@ struct HiDPISettingsTab: View {
         do {
             pendingInstall = (try model.planInstall(generated, for: display), generated)
         } catch {
-            exportError = "Could not plan the install: \(error)"
+            exportError = "Could not plan the install: \(error.localizedDescription)"
         }
     }
 
@@ -555,7 +561,7 @@ struct HiDPISettingsTab: View {
                 """
             Log.hidpiGenerator.notice("exported override package for \(display.id, privacy: .public)")
         } catch {
-            exportError = "Export failed: \(error)"
+            exportError = "Export failed: \(error.localizedDescription)"
         }
     }
 }

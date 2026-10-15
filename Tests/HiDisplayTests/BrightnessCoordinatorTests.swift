@@ -98,6 +98,88 @@ final class BrightnessCoordinatorTests: XCTestCase {
         XCTAssertEqual(gamma.resetCalls, [display.id], "the abandoned gamma dim must be undone exactly once")
     }
 
+    // MARK: - Phase, as the UI reads it
+
+    /// Before the first probe a display reads as probing, not unavailable: that is the state of every
+    /// external display for the two-second settle after it appears in the menu, and the menu used to
+    /// say "No brightness control available" for exactly that window.
+    func testPhaseIsProbingBeforeTheFirstProbeAndReadyAfterIt() async {
+        let (coordinator, ddc, _, _) = makeTestCoordinator()
+        let display = makeExternalDisplay(serial: 7)
+        await ddc.setProbeScript([supportedDDCResult(0.5)], for: display.id)
+
+        XCTAssertEqual(coordinator.phase(for: display.id), .probing, "unprobed must read as probing")
+
+        await coordinator.probeAndChoose(display: display)
+
+        XCTAssertEqual(coordinator.phase(for: display.id), .ready(.ddc))
+    }
+
+    /// A hold is its own phase, distinct from the software controller standing in underneath it: the
+    /// menu shows "waiting for DDC" rather than claiming gamma control it has deliberately not applied.
+    func testPhaseIsHeldWhileDDCEvidenceOutlastsTheLadder() async {
+        let (coordinator, ddc, _, _) = makeTestCoordinator()
+        let display = makeExternalDisplay(serial: 8)
+        await coordinator.seedDDCFacts(DDCSessionFacts(), for: display.id)
+        await ddc.setProbeScript([nullDDCResult()], for: display.id)
+        coordinator.savedBrightnessLookup = { _ in 0.4 }
+
+        await coordinator.probeAndChoose(display: display)
+        await waitForDDCProbeCount(ddc, key: display.id, atLeast: 5)
+
+        XCTAssertTrue(coordinator.isHeld(display.id))
+        XCTAssertEqual(coordinator.phase(for: display.id), .heldForDDC)
+    }
+
+    /// A re-probe on a display that already has a controller must not flip it back to probing: the
+    /// previous controller stays live for the duration, and the slider keeps working.
+    func testReprobeOfAControlledDisplayDoesNotReportProbing() async {
+        let (coordinator, ddc, _, _) = makeTestCoordinator()
+        let display = makeExternalDisplay(serial: 9)
+        await ddc.setProbeScript([supportedDDCResult(0.5)], for: display.id)
+        await coordinator.probeAndChoose(display: display)
+        XCTAssertEqual(coordinator.phase(for: display.id), .ready(.ddc))
+
+        await ddc.setProbeDelay(.milliseconds(60), for: display.id)
+        let reprobe = Task { await coordinator.probeAndChoose(display: display) }
+        try? await Task.sleep(for: .milliseconds(15))
+        XCTAssertEqual(coordinator.phase(for: display.id), .ready(.ddc), "still controlled mid-reprobe")
+        await reprobe.value
+        XCTAssertEqual(coordinator.phase(for: display.id), .ready(.ddc))
+    }
+
+    /// The built-in panel is never probed, and must say so rather than looking like it is still being
+    /// checked forever.
+    func testBuiltInPanelReadsAsUnavailable() async {
+        let (coordinator, _, _, _) = makeTestCoordinator()
+        let builtIn = DisplayDevice(
+            identity: DisplayIdentity(
+                cgDisplayID: 1, vendorID: 0x610, productID: 0xA040, serialNumber: 0, keyTier: .strong),
+            name: "Built-in", isBuiltIn: true, isOnline: true, isMain: true)
+
+        await coordinator.probeAndChoose(display: builtIn)
+
+        XCTAssertEqual(coordinator.phase(for: builtIn.id), .unavailable)
+    }
+
+    /// A display that leaves while its very first probe is still in flight has a phase but no state;
+    /// the teardown must drop the phase too, or it would read as probing forever.
+    func testDepartedDisplayDropsItsPhaseEvenWithoutState() async {
+        let (coordinator, ddc, _, _) = makeTestCoordinator()
+        let display = makeExternalDisplay(serial: 10)
+        await ddc.setProbeScript([supportedDDCResult(0.5)], for: display.id)
+        await ddc.setProbeDelay(.milliseconds(80), for: display.id)
+
+        let firstProbe = Task { await coordinator.probeAndChoose(display: display) }
+        try? await Task.sleep(for: .milliseconds(15))
+        XCTAssertEqual(coordinator.phases[display.id], .probing)
+        await coordinator.handleSettledDisplays([])
+        await firstProbe.value
+
+        XCTAssertNil(coordinator.phases[display.id], "teardown must clear a phase-only entry")
+        XCTAssertNil(coordinator.controller(for: display.id))
+    }
+
     /// A probe that is still in flight when the display disconnects must not resurrect state for it:
     /// the connection epoch it was stamped with is stale by the time it completes.
     func testStaleProbeFromPreviousConnectionEpochIsDiscarded() async {
