@@ -19,11 +19,13 @@ struct SettingsView: View {
         NavigationSplitView(columnVisibility: .constant(.all)) {
             SettingsSidebar()
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
+                // There is nothing to collapse the sidebar *to*: the window is the sidebar plus one
+                // page. The removal only takes effect on the sidebar column's own view; on the
+                // split view itself it is ignored and the toggle stays.
+                .toolbar(removing: .sidebarToggle)
         } detail: {
             SettingsDetail()
         }
-        // There is nothing to collapse the sidebar *to*: the window is the sidebar plus one page.
-        .toolbar(removing: .sidebarToggle)
         // Minimums rather than a fixed size: the HiDPI page is content-heavy, and pinning the
         // window's height is what pushed its Install button out of sight in an earlier version.
         .frame(minWidth: 760, idealWidth: 780, minHeight: 560, idealHeight: 600)
